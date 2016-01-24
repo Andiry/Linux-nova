@@ -106,6 +106,7 @@ struct nova_inode {
 	__le32	i_uid;		/* Owner Uid */
 	__le32	i_gid;		/* Group Id */
 	__le32	i_generation;	/* File version (for NFS) */
+	__le32	padding;
 	__le64	nova_ino;	/* nova inode number */
 
 	__le64	log_head;	/* Log head pointer */
@@ -114,7 +115,9 @@ struct nova_inode {
 	struct {
 		__le32 rdev;	/* major/minor # */
 	} dev;			/* device inode */
-};
+
+	/* Leave 8 bytes for inode table tail pointer */
+} __attribute((__packed__));
 
 
 #define NOVA_SB_SIZE 512       /* must be power of two */
@@ -141,8 +144,6 @@ struct nova_super_block {
 	__le32		s_blocksize;        /* blocksize in bytes */
 	__le64		s_size;             /* total size of fs in bytes */
 	char		s_volume_name[16];  /* volume name */
-	/* points to the location of struct nova_inode for the inode table */
-	__le64          s_inode_table_offset;
 
 	__le64		s_start_dynamic;
 
@@ -153,7 +154,7 @@ struct nova_super_block {
 	__le32		s_wtime;            /* write time */
 	/* fields for fast mount support. Always keep them together */
 	__le64		s_num_free_blocks;
-};
+} __attribute((__packed__));
 
 #define NOVA_SB_STATIC_SIZE(ps) ((u64)&ps->s_start_dynamic - (u64)ps)
 
@@ -162,9 +163,11 @@ struct nova_super_block {
 
 /* The root inode follows immediately after the redundant super block */
 #define NOVA_ROOT_INO		(1)
-#define NOVA_BLOCKNODE_INO	(2)
-#define NOVA_INODELIST_INO	(3)
-#define NOVA_LITEJOURNAL_INO	(4)
+#define NOVA_INODETABLE_INO	(2)	/* Temporaty inode table */
+#define NOVA_BLOCKNODE_INO	(3)
+#define NOVA_INODELIST_INO	(4)
+#define NOVA_LITEJOURNAL_INO	(5)
+#define NOVA_INODELIST1_INO	(6)
 
 #define	NOVA_ROOT_INO_START	(NOVA_SB_SIZE * 2)
 

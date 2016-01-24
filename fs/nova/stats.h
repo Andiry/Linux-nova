@@ -42,8 +42,8 @@ enum timing_category {
 	mknod_t,
 	rename_t,
 	readdir_t,
-	add_entry_t,
-	remove_entry_t,
+	add_dentry_t,
+	remove_dentry_t,
 	setattr_t,
 
 	/* I/O operations */
@@ -63,10 +63,18 @@ enum timing_category {
 	free_data_t,
 	free_log_t,
 
-	/* Logging and journaling */
-	logging_t,
-	append_entry_t,
-	log_gc_t,
+	/* Transaction */
+	create_trans_t,
+	link_trans_t,
+	update_tail_t,
+
+	/* Logging */
+	append_dir_entry_t,
+	append_file_entry_t,
+	append_link_change_t,
+	append_setattr_t,
+	fast_gc_t,
+	thorough_gc_t,
 	check_invalid_t,
 
 	/* Others */
@@ -83,6 +91,9 @@ enum timing_category {
 	evict_inode_t,
 	mmap_fault_t,
 
+	rebuild_dir_t,
+	rebuild_file_t,
+
 	/* Sentinel */
 	TIMING_NUM,
 };
@@ -93,17 +104,11 @@ extern u64 Countstats[TIMING_NUM];
 extern unsigned long long read_bytes;
 extern unsigned long long cow_write_bytes;
 extern unsigned long long fsync_bytes;
-extern unsigned long long checked_pages;
-extern unsigned long gc_pages;
-extern unsigned long alloc_data_pages;
-extern unsigned long free_data_pages;
-extern unsigned long alloc_log_pages;
-extern unsigned long free_log_pages;
-extern atomic64_t fsync_pages;
-extern atomic64_t header_alloc;
-extern atomic64_t header_free;
-extern atomic64_t range_alloc;
-extern atomic64_t range_free;
+extern unsigned long long fast_checked_pages;
+extern unsigned long long thorough_checked_pages;
+extern unsigned long fast_gc_pages;
+extern unsigned long thorough_gc_pages;
+extern unsigned long fsync_pages;
 
 typedef struct timespec timing_t;
 

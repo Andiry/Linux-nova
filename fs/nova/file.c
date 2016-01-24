@@ -25,7 +25,7 @@ static inline int nova_can_set_blocksize_hint(struct inode *inode,
 	struct nova_inode *pi, loff_t new_size)
 {
 	struct nova_inode_info *si = NOVA_I(inode);
-	struct nova_inode_info_header *sih = si->header;
+	struct nova_inode_info_header *sih = &si->header;
 
 	/* Currently, we don't deallocate data blocks till the file is deleted.
 	 * So no changing blocksize hints once allocation is done. */
@@ -107,6 +107,7 @@ static loff_t nova_llseek(struct file *file, loff_t offset, int origin)
 	return offset;
 }
 
+#if 0
 int nova_is_page_dirty(struct mm_struct *mm, unsigned long address,
 	int category, int set_clean)
 {
@@ -178,21 +179,12 @@ static inline int nova_set_page_clean(struct mm_struct *mm,
 
 	return 0;
 }
+#endif
 
 static inline int nova_check_page_dirty(struct super_block *sb,
 	unsigned long addr)
 {
-	int ret;
-
-//	u64 nvmm_block;
-//	unsigned long nvmm_addr;
-
-//	nvmm_block = pair->nvmm_mmap << PAGE_SHIFT;
-//	nvmm_addr = (unsigned long)nova_get_block(sb, nvmm_block);
-//	ret = nova_is_page_dirty(&init_mm, nvmm_addr, TEST_NVMM, 1);
-	ret = IS_MAP_WRITE(addr);
-
-	return ret;
+	return IS_MAP_WRITE(addr);
 }
 
 static unsigned long nova_get_dirty_range(struct super_block *sb,
@@ -207,6 +199,9 @@ static unsigned long nova_get_dirty_range(struct super_block *sb,
 	loff_t dirty_start;
 	loff_t temp = *start;
 
+	nova_dbgv("%s: inode %llu, start %llu, end %llu\n",
+			__func__, pi->nova_ino, *start, end);
+
 	dirty_start = temp;
 	while (temp < end) {
 		pgoff = temp >> PAGE_CACHE_SHIFT;
@@ -220,7 +215,7 @@ static unsigned long nova_get_dirty_range(struct super_block *sb,
 			if (flush_bytes == 0)
 				dirty_start = temp;
 			flush_bytes += bytes;
-			atomic64_inc(&fsync_pages);
+			fsync_pages++;
 		} else {
 			if (flush_bytes)
 				break;
@@ -236,7 +231,7 @@ static unsigned long nova_get_dirty_range(struct super_block *sb,
 	return flush_bytes;
 }
 
-static void nova_get_sync_range(struct nova_inode_info *si,
+static void nova_get_sync_range(struct nova_inode_info_header *sih,
 	loff_t *start, loff_t *end)
 {
 	unsigned long start_blk, end_blk;
@@ -245,8 +240,8 @@ static void nova_get_sync_range(struct nova_inode_info *si,
 	start_blk = *start >> PAGE_SHIFT;
 	end_blk = *end >> PAGE_SHIFT;
 
-	low_blk = si->low_mmap;
-	high_blk = si->high_mmap;
+	low_blk = sih->low_mmap;
+	high_blk = sih->high_mmap;
 
 	if (start_blk < low_blk)
 		*start = low_blk << PAGE_SHIFT;
@@ -264,7 +259,7 @@ int nova_fsync(struct file *file, loff_t start, loff_t end, int datasync)
 	struct address_space *mapping = file->f_mapping;
 	struct inode *inode = mapping->host;
 	struct nova_inode_info *si = NOVA_I(inode);
-	struct nova_inode_info_header *sih = si->header;
+	struct nova_inode_info_header *sih = &si->header;
 	struct super_block *sb = inode->i_sb;
 	struct nova_inode *pi;
 	unsigned long start_blk, end_blk;
@@ -299,7 +294,7 @@ int nova_fsync(struct file *file, loff_t start, loff_t end, int datasync)
 		return 0;
 	}
 
-	nova_get_sync_range(si, &start, &end);
+	nova_get_sync_range(sih, &start, &end);
 	start_blk = start >> PAGE_SHIFT;
 	end_blk = end >> PAGE_SHIFT;
 
@@ -350,7 +345,13 @@ out:
 /* This callback is called when a file is closed */
 static int nova_flush(struct file *file, fl_owner_t id)
 {
-	 /* Mmap needs to call msync() explicitly. */
+	struct address_space *mapping = file->f_mapping;
+	struct inode *inode = mapping->host;
+
+	 /* Issue a msync() on close */
+	if (mapping_mapped(mapping))
+		nova_fsync(file, 0, i_size_read(inode), 0);
+
 	return 0;
 }
 

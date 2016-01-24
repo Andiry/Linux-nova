@@ -42,8 +42,8 @@ const char *Timingstring[TIMING_NUM] =
 	"mknod",
 	"rename",
 	"readdir",
-	"add_entry",
-	"remove_entry",
+	"add_dentry",
+	"remove_dentry",
 	"setattr",
 
 	"dax_read",
@@ -60,9 +60,16 @@ const char *Timingstring[TIMING_NUM] =
 	"free_data_blocks",
 	"free_log_blocks",
 
-	"logging",
-	"append_inode_entry",
-	"inode_log_gc",
+	"transaction_new_inode",
+	"transaction_link_change",
+	"update_tail",
+
+	"append_dir_entry",
+	"append_file_entry",
+	"append_link_change",
+	"append_setattr",
+	"log_fast_gc",
+	"log_thorough_gc",
 	"check_invalid_log",
 
 	"find_cache_page",
@@ -77,6 +84,9 @@ const char *Timingstring[TIMING_NUM] =
 	"free_inode_log",
 	"evict_inode",
 	"mmap_page_fault",
+
+	"rebuild_dir",
+	"rebuild_file",
 };
 
 unsigned long long Timingstats[TIMING_NUM];
@@ -87,20 +97,26 @@ unsigned long write_breaks;
 unsigned long long read_bytes;
 unsigned long long cow_write_bytes;
 unsigned long long fsync_bytes;
-unsigned long long checked_pages;
-unsigned long gc_pages;
-unsigned long alloc_data_pages;
-unsigned long free_data_pages;
-unsigned long alloc_log_pages;
-unsigned long free_log_pages;
-atomic64_t fsync_pages = ATOMIC_INIT(0);
-atomic64_t header_alloc = ATOMIC_INIT(0);
-atomic64_t header_free = ATOMIC_INIT(0);
-atomic64_t range_alloc = ATOMIC_INIT(0);
-atomic64_t range_free = ATOMIC_INIT(0);
+unsigned long long fast_checked_pages;
+unsigned long long thorough_checked_pages;
+unsigned long fast_gc_pages;
+unsigned long thorough_gc_pages;
+unsigned long fsync_pages;
 
 void nova_print_alloc_stats(struct super_block *sb)
 {
+	struct nova_sb_info *sbi = NOVA_SB(sb);
+	struct free_list *free_list;
+	unsigned long alloc_log_count = 0;
+	unsigned long alloc_log_pages = 0;
+	unsigned long alloc_data_count = 0;
+	unsigned long alloc_data_pages = 0;
+	unsigned long free_log_count = 0;
+	unsigned long freed_log_pages = 0;
+	unsigned long free_data_count = 0;
+	unsigned long freed_data_pages = 0;
+	int i;
+
 	printk("=========== NOVA allocation stats ===========\n");
 	printk("Alloc %llu, alloc steps %lu, average %llu\n",
 		Countstats[new_data_blocks_t], alloc_steps,
@@ -110,21 +126,37 @@ void nova_print_alloc_stats(struct super_block *sb)
 		Countstats[free_data_t], free_steps,
 		Countstats[free_data_t] ?
 			free_steps / Countstats[free_data_t] : 0);
-	printk("Garbage collection %llu, check pages %llu, average %llu,\n"
-		"free pages %lu, average %llu\n",
-		Countstats[log_gc_t], checked_pages,
-		Countstats[log_gc_t] ?
-			checked_pages / Countstats[log_gc_t] : 0,
-		gc_pages, Countstats[log_gc_t] ?
-			gc_pages / Countstats[log_gc_t] : 0);
-	printk("Allocated %lu data pages\n", alloc_data_pages);
-	printk("Freed %lu data pages\n", free_data_pages);
-	printk("Allocated %lu log pages\n", alloc_log_pages);
-	printk("Freed %lu log pages\n", free_log_pages);
-	printk("Allocated %ld info headers\n",
-			atomic64_read(&header_alloc));
-	printk("Allocated %ld range nodes\n",
-			atomic64_read(&range_alloc));
+	printk("Fast GC %llu, check pages %llu, free pages %lu, average %llu\n",
+		Countstats[fast_gc_t], fast_checked_pages,
+		fast_gc_pages, Countstats[fast_gc_t] ?
+			fast_gc_pages / Countstats[fast_gc_t] : 0);
+	printk("Thorough GC %llu, checked pages %llu, free pages %lu, "
+		"average %llu\n", Countstats[thorough_gc_t],
+		thorough_checked_pages, thorough_gc_pages,
+		Countstats[thorough_gc_t] ?
+			thorough_gc_pages / Countstats[thorough_gc_t] : 0);
+
+	for (i = 0; i < sbi->cpus; i++) {
+		free_list = nova_get_free_list(sb, i);
+
+		alloc_log_count += free_list->alloc_log_count;
+		alloc_log_pages += free_list->alloc_log_pages;
+		alloc_data_count += free_list->alloc_data_count;
+		alloc_data_pages += free_list->alloc_data_pages;
+		free_log_count += free_list->free_log_count;
+		freed_log_pages += free_list->freed_log_pages;
+		free_data_count += free_list->free_data_count;
+		freed_data_pages += free_list->freed_data_pages;
+	}
+
+	printk("alloc log count %lu, allocated log pages %lu, "
+		"alloc data count %lu, allocated data pages %lu, "
+		"free log count %lu, freed log pages %lu, "
+		"free data count %lu, freed data pages %lu\n",
+		alloc_log_count, alloc_log_pages,
+		alloc_data_count, alloc_data_pages,
+		free_log_count, freed_log_pages,
+		free_data_count, freed_data_pages);
 }
 
 void nova_print_IO_stats(struct super_block *sb)
@@ -145,7 +177,7 @@ void nova_print_IO_stats(struct super_block *sb)
 		Countstats[copy_to_nvmm_t], fsync_bytes,
 		Countstats[copy_to_nvmm_t] ?
 			fsync_bytes / Countstats[copy_to_nvmm_t] : 0);
-	printk("Fsync %ld pages\n", atomic64_read(&fsync_pages));
+	printk("Fsync %lu pages\n", fsync_pages);
 }
 
 void nova_print_timing_stats(struct super_block *sb)
@@ -183,60 +215,144 @@ void nova_clear_stats(void)
 	}
 }
 
-void nova_print_inode_log(struct super_block *sb, struct inode *inode)
+static inline void nova_print_file_write_entry(struct super_block *sb,
+	u64 curr, struct nova_file_write_entry *entry)
 {
-	struct nova_inode *pi;
-	size_t entry_size = sizeof(struct nova_file_write_entry);
+	nova_dbg("file write entry @ 0x%llx: paoff %llu, pages %u, "
+			"blocknr %llu, invalid count %u, size %llu\n",
+			curr, entry->pgoff, entry->num_pages,
+			entry->block >> PAGE_SHIFT,
+			entry->invalid_pages, entry->size);
+}
+
+static inline void nova_print_set_attr_entry(struct super_block *sb,
+	u64 curr, struct nova_setattr_logentry *entry)
+{
+	nova_dbg("set attr entry @ 0x%llx: mode %u, size %llu\n",
+			curr, entry->mode, entry->size);
+}
+
+static inline void nova_print_link_change_entry(struct super_block *sb,
+	u64 curr, struct nova_link_change_entry *entry)
+{
+	nova_dbg("link change entry @ 0x%llx: links %u, flags %u\n",
+			curr, entry->links, entry->flags);
+}
+
+static inline size_t nova_print_dentry(struct super_block *sb,
+	u64 curr, struct nova_dentry *entry)
+{
+	nova_dbg("dir logentry @ 0x%llx: inode %llu, "
+			"namelen %u, rec len %u\n", curr,
+			le64_to_cpu(entry->ino),
+			entry->name_len, le16_to_cpu(entry->de_len));
+
+	return le16_to_cpu(entry->de_len);
+}
+
+static u64 nova_print_log_entry(struct super_block *sb, u64 curr)
+{
+	void *addr;
+	size_t size;
+	u8 type;
+
+	addr = (void *)nova_get_block(sb, curr);
+	type = nova_get_entry_type(addr);
+	switch (type) {
+		case SET_ATTR:
+			nova_print_set_attr_entry(sb, curr, addr);
+			curr += sizeof(struct nova_setattr_logentry);
+			break;
+		case LINK_CHANGE:
+			nova_print_link_change_entry(sb, curr, addr);
+			curr += sizeof(struct nova_link_change_entry);
+			break;
+		case FILE_WRITE:
+			nova_print_file_write_entry(sb, curr, addr);
+			curr += sizeof(struct nova_file_write_entry);
+			break;
+		case DIR_LOG:
+			size = nova_print_dentry(sb, curr, addr);
+			curr += size;
+			break;
+		default:
+			nova_dbg("%s: unknown type %d, 0x%llx\n",
+						__func__, type, curr);
+			curr += sizeof(struct nova_file_write_entry);
+			NOVA_ASSERT(0);
+			break;
+	}
+
+	return curr;
+}
+
+void nova_print_curr_log_page(struct super_block *sb, u64 curr)
+{
+	struct nova_inode_page_tail *tail;
+	u64 start, end;
+
+	start = curr & (~INVALID_MASK);
+	end = PAGE_TAIL(curr);
+
+	while (start < end) {
+		start = nova_print_log_entry(sb, start);
+	}
+
+	tail = nova_get_block(sb, end);
+	nova_dbg("Page tail. Next page @ block 0x%llx\n",
+			tail->next_page >> PAGE_SHIFT);
+}
+
+void nova_print_nova_log(struct super_block *sb,
+	struct nova_inode_info_header *sih, struct nova_inode *pi)
+{
 	u64 curr;
 
-	pi = nova_get_inode(sb, inode);
 	if (pi->log_tail == 0)
 		return;
 
 	curr = pi->log_head;
-	nova_dbg("Pi %lu: log head block @ %llu, tail @ block %llu, %llu\n",
-			inode->i_ino, curr >> PAGE_SHIFT,
-			pi->log_tail >> PAGE_SHIFT, pi->log_tail);
+	nova_dbg("Pi %lu: log head 0x%llx, tail 0x%llx\n",
+			sih->ino, curr, pi->log_tail);
 	while (curr != pi->log_tail) {
 		if ((curr & (PAGE_SIZE - 1)) == LAST_ENTRY) {
 			struct nova_inode_page_tail *tail =
 					nova_get_block(sb, curr);
-			nova_dbg("Log tail. Next page @ block %llu\n",
-					tail->next_page >> PAGE_SHIFT);
+			nova_dbg("Log tail. Next page 0x%llx\n",
+					tail->next_page);
 			curr = tail->next_page;
 		} else {
-			struct nova_file_write_entry *entry =
-					nova_get_block(sb, curr);
-			nova_dbg("entry @ %llu: offset %u, size %u, "
-				"blocknr %llu, invalid count %u\n",
-				(curr & (PAGE_SIZE - 1)) / entry_size,
-				entry->pgoff, entry->num_pages,
-				entry->block >> PAGE_SHIFT,
-				entry->invalid_pages);
-			curr += entry_size;
+			curr = nova_print_log_entry(sb, curr);
 		}
 	}
 }
 
-void nova_print_inode_log_pages(struct super_block *sb, struct inode *inode)
+void nova_print_inode_log(struct super_block *sb, struct inode *inode)
 {
-	struct nova_inode *pi;
 	struct nova_inode_info *si = NOVA_I(inode);
-	struct nova_inode_info_header *sih = si->header;
+	struct nova_inode_info_header *sih = &si->header;
+	struct nova_inode *pi;
+
+	pi = nova_get_inode(sb, inode);
+	nova_print_nova_log(sb, sih, pi);
+}
+
+void nova_print_nova_log_pages(struct super_block *sb,
+	struct nova_inode_info_header *sih, struct nova_inode *pi)
+{
 	struct nova_inode_log_page *curr_page;
 	u64 curr, next;
 	int count = 1;
 	int used = count;
 
-	pi = nova_get_inode(sb, inode);
 	if (pi->log_tail == 0) {
-		nova_dbg("Pi %lu has no log\n", inode->i_ino);
+		nova_dbg("Pi %lu has no log\n", sih->ino);
 		return;
 	}
 
 	curr = pi->log_head;
 	nova_dbg("Pi %lu: log head @ 0x%llx, tail @ 0x%llx\n",
-			inode->i_ino, curr, pi->log_tail);
+			sih->ino, curr, pi->log_tail);
 	curr_page = (struct nova_inode_log_page *)nova_get_block(sb, curr);
 	while ((next = curr_page->page_tail.next_page) != 0) {
 		nova_dbg_verbose("Current page 0x%llx, next page 0x%llx\n",
@@ -251,8 +367,18 @@ void nova_print_inode_log_pages(struct super_block *sb, struct inode *inode)
 	if (pi->log_tail >> PAGE_SHIFT == curr >> PAGE_SHIFT)
 		used = count;
 	nova_dbg("Pi %lu: log used %d pages, has %d pages, "
-		"si reports %lu pages\n", inode->i_ino, used, count,
+		"si reports %lu pages\n", sih->ino, used, count,
 		sih->log_pages);
+}
+
+void nova_print_inode_log_pages(struct super_block *sb, struct inode *inode)
+{
+	struct nova_inode *pi;
+	struct nova_inode_info *si = NOVA_I(inode);
+	struct nova_inode_info_header *sih = &si->header;
+
+	pi = nova_get_inode(sb, inode);
+	nova_print_nova_log_pages(sb, sih, pi);
 }
 
 void nova_print_free_lists(struct super_block *sb)
@@ -270,11 +396,19 @@ void nova_print_free_lists(struct super_block *sb)
 			free_list->block_end - free_list->block_start + 1,
 			free_list->num_free_blocks, free_list->num_blocknode);
 
-		nova_dbg("Free list %d: alloc count %lu, "
-			"free count %lu, allocated blocks %lu, "
-			"freed blocks %lu\n", i,
-			free_list->alloc_count,	free_list->free_count,
-			free_list->allocated_blocks, free_list->freed_blocks);
+		nova_dbg("Free list %d: alloc log count %lu, "
+			"allocated log pages %lu, alloc data count %lu, "
+			"allocated data pages %lu, free log count %lu, "
+			"freed log pages %lu, free data count %lu, "
+			"freed data pages %lu\n", i,
+			free_list->alloc_log_count,
+			free_list->alloc_log_pages,
+			free_list->alloc_data_count,
+			free_list->alloc_data_pages,
+			free_list->free_log_count,
+			free_list->freed_log_pages,
+			free_list->free_data_count,
+			free_list->freed_data_pages);
 	}
 
 	i = SHARED_CPU;
@@ -285,23 +419,14 @@ void nova_print_free_lists(struct super_block *sb)
 		free_list->block_end - free_list->block_start + 1,
 		free_list->num_free_blocks, free_list->num_blocknode);
 
-	nova_dbg("Free list %d: alloc count %lu, "
-		"free count %lu, allocated blocks %lu, "
-		"freed blocks %lu\n", i,
-		free_list->alloc_count,	free_list->free_count,
-		free_list->allocated_blocks, free_list->freed_blocks);
+	nova_dbg("Free list %d: alloc log count %lu, "
+		"allocated log pages %lu, alloc data count %lu, "
+		"allocated data pages %lu, free log count %lu, "
+		"freed log pages %lu, free data count %lu, "
+		"freed data pages %lu\n", i,
+		free_list->alloc_log_count, free_list->alloc_log_pages,
+		free_list->alloc_data_count, free_list->alloc_data_pages,
+		free_list->free_log_count, free_list->freed_log_pages,
+		free_list->free_data_count, free_list->freed_data_pages);
 }
 
-void nova_detect_memory_leak(struct super_block *sb)
-{
-	if (atomic64_read(&header_alloc) != atomic64_read(&header_free))
-		nova_dbg("%s: inode header memory leak! "
-			"allocated %ld, freed %ld\n", __func__,
-			atomic64_read(&header_alloc),
-			atomic64_read(&header_free));
-	if (atomic64_read(&range_alloc) != atomic64_read(&range_free))
-		nova_dbg("%s: range node memory leak! "
-			"allocated %ld, freed %ld\n", __func__,
-			atomic64_read(&range_alloc),
-			atomic64_read(&range_free));
-}
