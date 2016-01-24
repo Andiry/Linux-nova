@@ -14,7 +14,7 @@ With atomicity guarantees, NOVA is able to recover from system failures and rest
 ## Building NOVA
 NOVA relies on the NVDIMM support.
 
-To build NOVA, config your kernel with NVDIMM support (`CONFIG_BLK_DEV_PMEM`), and enable NOVA support (`CONFIG_NOVA_FS`).
+To build NOVA, config your kernel with NVDIMM support (`CONFIG_BLK_DEV_PMEM`) and enable NOVA (`CONFIG_NOVA_FS`), then build the kernel with 64bit support.
 
 ## Running NOVA
 NOVA runs on a physically contiguous memory region that is not used by the Linux kernel. To reserve the memory space you can boot the kernel with `memmap` command line option. 
