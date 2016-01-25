@@ -168,7 +168,7 @@ int nova_get_inode_address(struct super_block *sb, u64 ino,
 	return 0;
 }
 
-static inline int nova_free_contiguous_data_blocks(struct super_block *sb,
+static int nova_free_contiguous_data_blocks(struct super_block *sb,
 	struct nova_inode_info_header *sih, struct nova_inode *pi,
 	struct nova_file_write_entry *entry, unsigned long pgoff,
 	unsigned long num_pages, unsigned long *start_blocknr,
@@ -801,7 +801,6 @@ static int nova_free_inode(struct inode *inode,
 	nova_free_inode_log(sb, pi);
 	pi->i_blocks = 0;
 
-	/* Clear the si header, but not free it - leave for future use */
 	sih->log_pages = 0;
 	sih->i_mode = 0;
 	sih->pi_addr = 0;
@@ -2140,10 +2139,9 @@ void nova_free_inode_log(struct super_block *sb, struct nova_inode *pi)
 
 	curr_block = pi->log_head;
 
-	/* Update head before freeing the log */
-	pi->log_head = 0;
+	/* The inode is invalid now, no need to call PCOMMIT */
+	pi->log_head = pi->log_tail = 0;
 	nova_flush_buffer(&pi->log_head, CACHELINE_SIZE, 0);
-	nova_update_tail(pi, 0);
 
 	freed = nova_free_contiguous_log_blocks(sb, pi, curr_block);
 
