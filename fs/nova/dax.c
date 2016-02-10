@@ -3,7 +3,8 @@
  *
  * DAX file operations.
  *
- * Copyright 2015 NVSL, UC San Diego
+ * Copyright 2015-2016 Regents of the University of California,
+ * UCSD Non-Volatile Systems Lab, Andiry Xu <jix024@cs.ucsd.edu>
  * Copyright 2012-2013 Intel Corporation
  * Copyright 2009-2011 Marco Stornelli <marco.stornelli@gmail.com>
  *
@@ -303,6 +304,9 @@ ssize_t nova_cow_file_write(struct file *filp,
 	u64 temp_tail, begin_tail = 0;
 	u32 time;
 
+	if (len == 0)
+		return 0;
+
 	NOVA_START_TIMING(cow_write_t, cow_write_time);
 
 	sb_start_write(inode->i_sb);
@@ -320,12 +324,6 @@ ssize_t nova_cow_file_write(struct file *filp,
 
 	count = len;
 
-#if LINUX_VERSION_CODE <= KERNEL_VERSION(4,0,9)
-	ret = generic_write_checks(filp, &pos, &count, S_ISBLK(inode->i_mode));
-	if (ret || count == 0)
-		goto out;
-#endif
-
 	pi = nova_get_inode(sb, inode);
 
 	offset = pos & (sb->s_blocksize - 1);
@@ -333,11 +331,7 @@ ssize_t nova_cow_file_write(struct file *filp,
 	total_blocks = num_blocks;
 	/* offset in the actual block size block */
 
-#if LINUX_VERSION_CODE <= KERNEL_VERSION(4,1,0)
-	ret = file_remove_suid(filp);
-#else
 	ret = file_remove_privs(filp);
-#endif
 	if (ret) {
 		goto out;
 	}
