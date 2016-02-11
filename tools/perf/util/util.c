@@ -3,6 +3,7 @@
 #include "debug.h"
 #include <api/fs/fs.h>
 #include <sys/mman.h>
+#include <sys/utsname.h>
 #ifdef HAVE_BACKTRACE_SUPPORT
 #include <execinfo.h>
 #endif
@@ -15,12 +16,14 @@
 #include <linux/kernel.h>
 #include <unistd.h>
 #include "callchain.h"
+#include "strlist.h"
 
 struct callchain_param	callchain_param = {
-	.mode	= CHAIN_GRAPH_REL,
+	.mode	= CHAIN_GRAPH_ABS,
 	.min_percent = 0.5,
 	.order  = ORDER_CALLEE,
-	.key	= CCKEY_FUNCTION
+	.key	= CCKEY_FUNCTION,
+	.value	= CCVAL_PERCENT,
 };
 
 /*
@@ -33,9 +36,6 @@ bool test_attr__enabled;
 
 bool perf_host  = true;
 bool perf_guest = false;
-
-char tracing_path[PATH_MAX + 1]        = "/sys/kernel/debug/tracing";
-char tracing_events_path[PATH_MAX + 1] = "/sys/kernel/debug/tracing/events";
 
 void event_attr_init(struct perf_event_attr *attr)
 {
@@ -353,108 +353,8 @@ void sighandler_dump_stack(int sig)
 {
 	psignal(sig, "perf");
 	dump_stack();
-	exit(sig);
-}
-
-void get_term_dimensions(struct winsize *ws)
-{
-	char *s = getenv("LINES");
-
-	if (s != NULL) {
-		ws->ws_row = atoi(s);
-		s = getenv("COLUMNS");
-		if (s != NULL) {
-			ws->ws_col = atoi(s);
-			if (ws->ws_row && ws->ws_col)
-				return;
-		}
-	}
-#ifdef TIOCGWINSZ
-	if (ioctl(1, TIOCGWINSZ, ws) == 0 &&
-	    ws->ws_row && ws->ws_col)
-		return;
-#endif
-	ws->ws_row = 25;
-	ws->ws_col = 80;
-}
-
-void set_term_quiet_input(struct termios *old)
-{
-	struct termios tc;
-
-	tcgetattr(0, old);
-	tc = *old;
-	tc.c_lflag &= ~(ICANON | ECHO);
-	tc.c_cc[VMIN] = 0;
-	tc.c_cc[VTIME] = 0;
-	tcsetattr(0, TCSANOW, &tc);
-}
-
-static void set_tracing_events_path(const char *tracing, const char *mountpoint)
-{
-	snprintf(tracing_path, sizeof(tracing_path), "%s/%s",
-		 mountpoint, tracing);
-	snprintf(tracing_events_path, sizeof(tracing_events_path), "%s/%s%s",
-		 mountpoint, tracing, "events");
-}
-
-static const char *__perf_tracefs_mount(const char *mountpoint)
-{
-	const char *mnt;
-
-	mnt = tracefs_mount(mountpoint);
-	if (!mnt)
-		return NULL;
-
-	set_tracing_events_path("", mnt);
-
-	return mnt;
-}
-
-static const char *__perf_debugfs_mount(const char *mountpoint)
-{
-	const char *mnt;
-
-	mnt = debugfs_mount(mountpoint);
-	if (!mnt)
-		return NULL;
-
-	set_tracing_events_path("tracing/", mnt);
-
-	return mnt;
-}
-
-const char *perf_debugfs_mount(const char *mountpoint)
-{
-	const char *mnt;
-
-	mnt = __perf_tracefs_mount(mountpoint);
-	if (mnt)
-		return mnt;
-
-	mnt = __perf_debugfs_mount(mountpoint);
-
-	return mnt;
-}
-
-void perf_debugfs_set_path(const char *mntpt)
-{
-	set_tracing_events_path("tracing/", mntpt);
-}
-
-char *get_tracing_file(const char *name)
-{
-	char *file;
-
-	if (asprintf(&file, "%s/%s", tracing_path, name) < 0)
-		return NULL;
-
-	return file;
-}
-
-void put_tracing_file(char *file)
-{
-	free(file);
+	signal(sig, SIG_DFL);
+	raise(sig);
 }
 
 int parse_nsec_time(const char *str, u64 *ptime)
@@ -734,4 +634,60 @@ bool find_process(const char *name)
 
 	closedir(dir);
 	return ret ? false : true;
+}
+
+int
+fetch_kernel_version(unsigned int *puint, char *str,
+		     size_t str_size)
+{
+	struct utsname utsname;
+	int version, patchlevel, sublevel, err;
+
+	if (uname(&utsname))
+		return -1;
+
+	if (str && str_size) {
+		strncpy(str, utsname.release, str_size);
+		str[str_size - 1] = '\0';
+	}
+
+	err = sscanf(utsname.release, "%d.%d.%d",
+		     &version, &patchlevel, &sublevel);
+
+	if (err != 3) {
+		pr_debug("Unablt to get kernel version from uname '%s'\n",
+			 utsname.release);
+		return -1;
+	}
+
+	if (puint)
+		*puint = (version << 16) + (patchlevel << 8) + sublevel;
+	return 0;
+}
+
+const char *perf_tip(const char *dirpath)
+{
+	struct strlist *tips;
+	struct str_node *node;
+	char *tip = NULL;
+	struct strlist_config conf = {
+		.dirname = dirpath,
+		.file_only = true,
+	};
+
+	tips = strlist__new("tips.txt", &conf);
+	if (tips == NULL)
+		return errno == ENOENT ? NULL : "Tip: get more memory! ;-p";
+
+	if (strlist__nr_entries(tips) == 0)
+		goto out;
+
+	node = strlist__entry(tips, random() % strlist__nr_entries(tips));
+	if (asprintf(&tip, "Tip: %s", node->s) < 0)
+		tip = (char *)"Tip: get more memory! ;-)";
+
+out:
+	strlist__delete(tips);
+
+	return tip;
 }

@@ -7,6 +7,7 @@
 #include <linux/if_ether.h>
 #include <net/ip.h>
 #include <net/netlink.h>
+#include <net/switchdev.h>
 #if IS_ENABLED(CONFIG_IPV6)
 #include <net/ipv6.h>
 #include <net/addrconf.h>
@@ -210,9 +211,31 @@ static inline size_t rtnl_mdb_nlmsg_size(void)
 static void __br_mdb_notify(struct net_device *dev, struct br_mdb_entry *entry,
 			    int type)
 {
+	struct switchdev_obj_port_mdb mdb = {
+		.obj = {
+			.id = SWITCHDEV_OBJ_ID_PORT_MDB,
+			.flags = SWITCHDEV_F_DEFER,
+		},
+		.vid = entry->vid,
+	};
+	struct net_device *port_dev;
 	struct net *net = dev_net(dev);
 	struct sk_buff *skb;
 	int err = -ENOBUFS;
+
+	port_dev = __dev_get_by_index(net, entry->ifindex);
+	if (entry->addr.proto == htons(ETH_P_IP))
+		ip_eth_mc_map(entry->addr.u.ip4, mdb.addr);
+#if IS_ENABLED(CONFIG_IPV6)
+	else
+		ipv6_eth_mc_map(&entry->addr.u.ip6, mdb.addr);
+#endif
+
+	mdb.obj.orig_dev = port_dev;
+	if (port_dev && type == RTM_NEWMDB)
+		switchdev_port_obj_add(port_dev, &mdb.obj);
+	else if (port_dev && type == RTM_DELMDB)
+		switchdev_port_obj_del(port_dev, &mdb.obj);
 
 	skb = nlmsg_new(rtnl_mdb_nlmsg_size(), GFP_ATOMIC);
 	if (!skb)
@@ -464,11 +487,11 @@ static int __br_mdb_add(struct net *net, struct net_bridge *br,
 static int br_mdb_add(struct sk_buff *skb, struct nlmsghdr *nlh)
 {
 	struct net *net = sock_net(skb->sk);
-	unsigned short vid = VLAN_N_VID;
+	struct net_bridge_vlan_group *vg;
 	struct net_device *dev, *pdev;
 	struct br_mdb_entry *entry;
 	struct net_bridge_port *p;
-	struct net_port_vlans *pv;
+	struct net_bridge_vlan *v;
 	struct net_bridge *br;
 	int err;
 
@@ -489,10 +512,10 @@ static int br_mdb_add(struct sk_buff *skb, struct nlmsghdr *nlh)
 	if (!p || p->br != br || p->state == BR_STATE_DISABLED)
 		return -EINVAL;
 
-	pv = nbp_get_vlan_info(p);
-	if (br_vlan_enabled(br) && pv && entry->vid == 0) {
-		for_each_set_bit(vid, pv->vlan_bitmap, VLAN_N_VID) {
-			entry->vid = vid;
+	vg = nbp_vlan_group(p);
+	if (br_vlan_enabled(br) && vg && entry->vid == 0) {
+		list_for_each_entry(v, &vg->vlan_list, vlist) {
+			entry->vid = v->vid;
 			err = __br_mdb_add(net, br, entry);
 			if (err)
 				break;
@@ -566,11 +589,11 @@ unlock:
 static int br_mdb_del(struct sk_buff *skb, struct nlmsghdr *nlh)
 {
 	struct net *net = sock_net(skb->sk);
-	unsigned short vid = VLAN_N_VID;
+	struct net_bridge_vlan_group *vg;
 	struct net_device *dev, *pdev;
 	struct br_mdb_entry *entry;
 	struct net_bridge_port *p;
-	struct net_port_vlans *pv;
+	struct net_bridge_vlan *v;
 	struct net_bridge *br;
 	int err;
 
@@ -591,10 +614,10 @@ static int br_mdb_del(struct sk_buff *skb, struct nlmsghdr *nlh)
 	if (!p || p->br != br || p->state == BR_STATE_DISABLED)
 		return -EINVAL;
 
-	pv = nbp_get_vlan_info(p);
-	if (br_vlan_enabled(br) && pv && entry->vid == 0) {
-		for_each_set_bit(vid, pv->vlan_bitmap, VLAN_N_VID) {
-			entry->vid = vid;
+	vg = nbp_vlan_group(p);
+	if (br_vlan_enabled(br) && vg && entry->vid == 0) {
+		list_for_each_entry(v, &vg->vlan_list, vlist) {
+			entry->vid = v->vid;
 			err = __br_mdb_del(br, entry);
 			if (!err)
 				__br_mdb_notify(dev, entry, RTM_DELMDB);

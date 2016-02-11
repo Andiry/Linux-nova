@@ -27,7 +27,7 @@
  * Copyright (c) 2008, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
  *
- * Copyright (c) 2011, 2012, Intel Corporation.
+ * Copyright (c) 2011, 2015, Intel Corporation.
  */
 /*
  * This file is part of Lustre, http://www.lustre.org/
@@ -87,11 +87,6 @@ struct ll_sa_entry {
 static unsigned int sai_generation;
 static DEFINE_SPINLOCK(sai_generation_lock);
 
-static inline int ll_sa_entry_unhashed(struct ll_sa_entry *entry)
-{
-	return list_empty(&entry->se_hash);
-}
-
 /*
  * The entry only can be released by the caller, it is necessary to hold lock.
  */
@@ -136,20 +131,6 @@ static inline int agl_should_run(struct ll_statahead_info *sai,
 				 struct inode *inode)
 {
 	return (inode != NULL && S_ISREG(inode->i_mode) && sai->sai_agl_valid);
-}
-
-static inline struct ll_sa_entry *
-sa_first_received_entry(struct ll_statahead_info *sai)
-{
-	return list_entry(sai->sai_entries_received.next,
-			      struct ll_sa_entry, se_list);
-}
-
-static inline struct ll_inode_info *
-agl_first_entry(struct ll_statahead_info *sai)
-{
-	return list_entry(sai->sai_entries_agl.next,
-			      struct ll_inode_info, lli_agl_list);
 }
 
 static inline int sa_sent_full(struct ll_statahead_info *sai)
@@ -331,7 +312,7 @@ static void ll_sa_entry_put(struct ll_statahead_info *sai,
 
 		LASSERT(list_empty(&entry->se_link));
 		LASSERT(list_empty(&entry->se_list));
-		LASSERT(ll_sa_entry_unhashed(entry));
+		LASSERT(list_empty(&entry->se_hash));
 
 		ll_sa_entry_cleanup(sai, entry);
 		iput(entry->se_inode);
@@ -346,7 +327,7 @@ do_sa_entry_fini(struct ll_statahead_info *sai, struct ll_sa_entry *entry)
 {
 	struct ll_inode_info *lli = ll_i2info(sai->sai_inode);
 
-	LASSERT(!ll_sa_entry_unhashed(entry));
+	LASSERT(!list_empty(&entry->se_hash));
 	LASSERT(!list_empty(&entry->se_link));
 
 	ll_sa_entry_unhash(sai, entry);
@@ -447,7 +428,7 @@ static void ll_agl_add(struct ll_statahead_info *sai,
 
 		igrab(inode);
 		spin_lock(&parent->lli_agl_lock);
-		if (agl_list_empty(sai))
+		if (list_empty(&sai->sai_entries_agl))
 			added = 1;
 		list_add_tail(&child->lli_agl_list, &sai->sai_entries_agl);
 		spin_unlock(&parent->lli_agl_lock);
@@ -537,11 +518,11 @@ static void ll_sai_put(struct ll_statahead_info *sai)
 			do_sa_entry_fini(sai, entry);
 
 		LASSERT(list_empty(&sai->sai_entries));
-		LASSERT(sa_received_empty(sai));
+		LASSERT(list_empty(&sai->sai_entries_received));
 		LASSERT(list_empty(&sai->sai_entries_stated));
 
 		LASSERT(atomic_read(&sai->sai_cache_count) == 0);
-		LASSERT(agl_list_empty(sai));
+		LASSERT(list_empty(&sai->sai_entries_agl));
 
 		iput(inode);
 		kfree(sai);
@@ -621,11 +602,12 @@ static void ll_post_statahead(struct ll_statahead_info *sai)
 	int		     rc    = 0;
 
 	spin_lock(&lli->lli_sa_lock);
-	if (unlikely(sa_received_empty(sai))) {
+	if (unlikely(list_empty(&sai->sai_entries_received))) {
 		spin_unlock(&lli->lli_sa_lock);
 		return;
 	}
-	entry = sa_first_received_entry(sai);
+	entry = list_entry(sai->sai_entries_received.next,
+			   struct ll_sa_entry, se_list);
 	atomic_inc(&entry->se_refcount);
 	list_del_init(&entry->se_list);
 	spin_unlock(&lli->lli_sa_lock);
@@ -659,7 +641,7 @@ static void ll_post_statahead(struct ll_statahead_info *sai)
 		 * revalidate.
 		 */
 		/* unlinked and re-created with the same name */
-		if (unlikely(!lu_fid_eq(&minfo->mi_data.op_fid2, &body->fid1))){
+		if (unlikely(!lu_fid_eq(&minfo->mi_data.op_fid2, &body->fid1))) {
 			entry->se_inode = NULL;
 			iput(child);
 			child = NULL;
@@ -756,7 +738,7 @@ static int ll_statahead_interpret(struct ptlrpc_request *req,
 			 * for readpage and other tries to enqueue lock on child
 			 * with parent's lock held, for example: unlink. */
 			entry->se_handle = handle;
-			wakeup = sa_received_empty(sai);
+			wakeup = list_empty(&sai->sai_entries_received);
 			list_add_tail(&entry->se_list,
 					  &sai->sai_entries_received);
 		}
@@ -784,25 +766,16 @@ static void sa_args_fini(struct md_enqueue_info *minfo,
 {
 	LASSERT(minfo && einfo);
 	iput(minfo->mi_dir);
-	capa_put(minfo->mi_data.op_capa1);
-	capa_put(minfo->mi_data.op_capa2);
 	kfree(minfo);
 	kfree(einfo);
 }
 
 /**
- * There is race condition between "capa_put" and "ll_statahead_interpret" for
- * accessing "op_data.op_capa[1,2]" as following:
- * "capa_put" releases "op_data.op_capa[1,2]"'s reference count after calling
- * "md_intent_getattr_async". But "ll_statahead_interpret" maybe run first, and
- * fill "op_data.op_capa[1,2]" as POISON, then cause "capa_put" access invalid
- * "ocapa". So here reserve "op_data.op_capa[1,2]" in "pcapa" before calling
- * "md_intent_getattr_async".
+ * prepare arguments for async stat RPC.
  */
 static int sa_args_init(struct inode *dir, struct inode *child,
 			struct ll_sa_entry *entry, struct md_enqueue_info **pmi,
-			struct ldlm_enqueue_info **pei,
-			struct obd_capa **pcapa)
+			struct ldlm_enqueue_info **pei)
 {
 	struct qstr	      *qstr = &entry->se_qstr;
 	struct ll_inode_info     *lli  = ll_i2info(dir);
@@ -843,8 +816,6 @@ static int sa_args_init(struct inode *dir, struct inode *child,
 
 	*pmi = minfo;
 	*pei = einfo;
-	pcapa[0] = op_data->op_capa1;
-	pcapa[1] = op_data->op_capa2;
 
 	return 0;
 }
@@ -853,20 +824,15 @@ static int do_sa_lookup(struct inode *dir, struct ll_sa_entry *entry)
 {
 	struct md_enqueue_info   *minfo;
 	struct ldlm_enqueue_info *einfo;
-	struct obd_capa	  *capas[2];
 	int		       rc;
 
-	rc = sa_args_init(dir, NULL, entry, &minfo, &einfo, capas);
+	rc = sa_args_init(dir, NULL, entry, &minfo, &einfo);
 	if (rc)
 		return rc;
 
 	rc = md_intent_getattr_async(ll_i2mdexp(dir), minfo, einfo);
-	if (!rc) {
-		capa_put(capas[0]);
-		capa_put(capas[1]);
-	} else {
+	if (rc < 0)
 		sa_args_fini(minfo, einfo);
-	}
 
 	return rc;
 }
@@ -885,7 +851,6 @@ static int do_sa_revalidate(struct inode *dir, struct ll_sa_entry *entry,
 					 .d.lustre.it_lock_handle = 0 };
 	struct md_enqueue_info   *minfo;
 	struct ldlm_enqueue_info *einfo;
-	struct obd_capa	  *capas[2];
 	int rc;
 
 	if (unlikely(inode == NULL))
@@ -903,7 +868,7 @@ static int do_sa_revalidate(struct inode *dir, struct ll_sa_entry *entry,
 		return 1;
 	}
 
-	rc = sa_args_init(dir, inode, entry, &minfo, &einfo, capas);
+	rc = sa_args_init(dir, inode, entry, &minfo, &einfo);
 	if (rc) {
 		entry->se_inode = NULL;
 		iput(inode);
@@ -911,10 +876,7 @@ static int do_sa_revalidate(struct inode *dir, struct ll_sa_entry *entry,
 	}
 
 	rc = md_intent_getattr_async(ll_i2mdexp(dir), minfo, einfo);
-	if (!rc) {
-		capa_put(capas[0]);
-		capa_put(capas[1]);
-	} else {
+	if (rc < 0) {
 		entry->se_inode = NULL;
 		iput(inode);
 		sa_args_fini(minfo, einfo);
@@ -967,7 +929,7 @@ static void ll_statahead_one(struct dentry *parent, const char *entry_name,
 
 static int ll_agl_thread(void *arg)
 {
-	struct dentry	    *parent = (struct dentry *)arg;
+	struct dentry	    *parent = arg;
 	struct inode	     *dir    = d_inode(parent);
 	struct ll_inode_info     *plli   = ll_i2info(dir);
 	struct ll_inode_info     *clli;
@@ -993,7 +955,7 @@ static int ll_agl_thread(void *arg)
 
 	while (1) {
 		l_wait_event(thread->t_ctl_waitq,
-			     !agl_list_empty(sai) ||
+			     !list_empty(&sai->sai_entries_agl) ||
 			     !thread_is_running(thread),
 			     &lwi);
 
@@ -1003,8 +965,9 @@ static int ll_agl_thread(void *arg)
 		spin_lock(&plli->lli_agl_lock);
 		/* The statahead thread maybe help to process AGL entries,
 		 * so check whether list empty again. */
-		if (!agl_list_empty(sai)) {
-			clli = agl_first_entry(sai);
+		if (!list_empty(&sai->sai_entries_agl)) {
+			clli = list_entry(sai->sai_entries_agl.next,
+					  struct ll_inode_info, lli_agl_list);
 			list_del_init(&clli->lli_agl_list);
 			spin_unlock(&plli->lli_agl_lock);
 			ll_agl_trigger(&clli->lli_vfs_inode, sai);
@@ -1015,8 +978,9 @@ static int ll_agl_thread(void *arg)
 
 	spin_lock(&plli->lli_agl_lock);
 	sai->sai_agl_valid = 0;
-	while (!agl_list_empty(sai)) {
-		clli = agl_first_entry(sai);
+	while (!list_empty(&sai->sai_entries_agl)) {
+		clli = list_entry(sai->sai_entries_agl.next,
+				  struct ll_inode_info, lli_agl_list);
 		list_del_init(&clli->lli_agl_list);
 		spin_unlock(&plli->lli_agl_lock);
 		clli->lli_agl_index = 0;
@@ -1058,7 +1022,7 @@ static void ll_start_agl(struct dentry *parent, struct ll_statahead_info *sai)
 
 static int ll_statahead_thread(void *arg)
 {
-	struct dentry	    *parent = (struct dentry *)arg;
+	struct dentry	    *parent = arg;
 	struct inode	     *dir    = d_inode(parent);
 	struct ll_inode_info     *plli   = ll_i2info(dir);
 	struct ll_inode_info     *clli;
@@ -1156,13 +1120,13 @@ static int ll_statahead_thread(void *arg)
 keep_it:
 			l_wait_event(thread->t_ctl_waitq,
 				     !sa_sent_full(sai) ||
-				     !sa_received_empty(sai) ||
-				     !agl_list_empty(sai) ||
+				     !list_empty(&sai->sai_entries_received) ||
+				     !list_empty(&sai->sai_entries_agl) ||
 				     !thread_is_running(thread),
 				     &lwi);
 
 interpret_it:
-			while (!sa_received_empty(sai))
+			while (!list_empty(&sai->sai_entries_received))
 				ll_post_statahead(sai);
 
 			if (unlikely(!thread_is_running(thread))) {
@@ -1176,14 +1140,15 @@ interpret_it:
 			 * to process the AGL entries. */
 			if (sa_sent_full(sai)) {
 				spin_lock(&plli->lli_agl_lock);
-				while (!agl_list_empty(sai)) {
-					clli = agl_first_entry(sai);
+				while (!list_empty(&sai->sai_entries_agl)) {
+					clli = list_entry(sai->sai_entries_agl.next,
+							  struct ll_inode_info, lli_agl_list);
 					list_del_init(&clli->lli_agl_list);
 					spin_unlock(&plli->lli_agl_lock);
 					ll_agl_trigger(&clli->lli_vfs_inode,
 						       sai);
 
-					if (!sa_received_empty(sai))
+					if (!list_empty(&sai->sai_entries_received))
 						goto interpret_it;
 
 					if (unlikely(
@@ -1214,12 +1179,12 @@ do_it:
 			ll_release_page(page, 0);
 			while (1) {
 				l_wait_event(thread->t_ctl_waitq,
-					     !sa_received_empty(sai) ||
-					     sai->sai_sent == sai->sai_replied||
+					     !list_empty(&sai->sai_entries_received) ||
+					     sai->sai_sent == sai->sai_replied ||
 					     !thread_is_running(thread),
 					     &lwi);
 
-				while (!sa_received_empty(sai))
+				while (!list_empty(&sai->sai_entries_received))
 					ll_post_statahead(sai);
 
 				if (unlikely(!thread_is_running(thread))) {
@@ -1228,14 +1193,15 @@ do_it:
 				}
 
 				if (sai->sai_sent == sai->sai_replied &&
-				    sa_received_empty(sai))
+				    list_empty(&sai->sai_entries_received))
 					break;
 			}
 
 			spin_lock(&plli->lli_agl_lock);
-			while (!agl_list_empty(sai) &&
+			while (!list_empty(&sai->sai_entries_agl) &&
 			       thread_is_running(thread)) {
-				clli = agl_first_entry(sai);
+				clli = list_entry(sai->sai_entries_agl.next,
+						  struct ll_inode_info, lli_agl_list);
 				list_del_init(&clli->lli_agl_list);
 				spin_unlock(&plli->lli_agl_lock);
 				ll_agl_trigger(&clli->lli_vfs_inode, sai);
@@ -1280,12 +1246,12 @@ out:
 	}
 	ll_dir_chain_fini(&chain);
 	spin_lock(&plli->lli_sa_lock);
-	if (!sa_received_empty(sai)) {
+	if (!list_empty(&sai->sai_entries_received)) {
 		thread_set_flags(thread, SVC_STOPPING);
 		spin_unlock(&plli->lli_sa_lock);
 
 		/* To release the resources held by received entries. */
-		while (!sa_received_empty(sai))
+		while (!list_empty(&sai->sai_entries_received))
 			ll_post_statahead(sai);
 
 		spin_lock(&plli->lli_sa_lock);

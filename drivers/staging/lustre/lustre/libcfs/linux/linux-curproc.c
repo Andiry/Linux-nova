@@ -27,7 +27,7 @@
  * Copyright (c) 2008, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
  *
- * Copyright (c) 2011, 2012, Intel Corporation.
+ * Copyright (c) 2011, 2015, Intel Corporation.
  */
 /*
  * This file is part of Lustre, http://www.lustre.org/
@@ -91,6 +91,7 @@ static void cfs_kernel_cap_pack(kernel_cap_t kcap, cfs_cap_t *cap)
 cfs_cap_t cfs_curproc_cap_pack(void)
 {
 	cfs_cap_t cap;
+
 	cfs_kernel_cap_pack(current_cap(), &cap);
 	return cap;
 }

@@ -273,29 +273,6 @@ static const struct drm_plane_helper_funcs rcar_du_plane_helper_funcs = {
 	.atomic_update = rcar_du_plane_atomic_update,
 };
 
-static void rcar_du_plane_reset(struct drm_plane *plane)
-{
-	struct rcar_du_plane_state *state;
-
-	if (plane->state && plane->state->fb)
-		drm_framebuffer_unreference(plane->state->fb);
-
-	kfree(plane->state);
-	plane->state = NULL;
-
-	state = kzalloc(sizeof(*state), GFP_KERNEL);
-	if (state == NULL)
-		return;
-
-	state->hwindex = -1;
-	state->alpha = 255;
-	state->colorkey = RCAR_DU_COLORKEY_NONE;
-	state->zpos = plane->type == DRM_PLANE_TYPE_PRIMARY ? 0 : 1;
-
-	plane->state = &state->state;
-	plane->state->plane = plane;
-}
-
 static struct drm_plane_state *
 rcar_du_plane_atomic_duplicate_state(struct drm_plane *plane)
 {
@@ -320,6 +297,28 @@ static void rcar_du_plane_atomic_destroy_state(struct drm_plane *plane,
 {
 	__drm_atomic_helper_plane_destroy_state(plane, state);
 	kfree(to_rcar_plane_state(state));
+}
+
+static void rcar_du_plane_reset(struct drm_plane *plane)
+{
+	struct rcar_du_plane_state *state;
+
+	if (plane->state) {
+		rcar_du_plane_atomic_destroy_state(plane, plane->state);
+		plane->state = NULL;
+	}
+
+	state = kzalloc(sizeof(*state), GFP_KERNEL);
+	if (state == NULL)
+		return;
+
+	state->hwindex = -1;
+	state->alpha = 255;
+	state->colorkey = RCAR_DU_COLORKEY_NONE;
+	state->zpos = plane->type == DRM_PLANE_TYPE_PRIMARY ? 0 : 1;
+
+	plane->state = &state->state;
+	plane->state->plane = plane;
 }
 
 static int rcar_du_plane_atomic_set_property(struct drm_plane *plane,
@@ -411,7 +410,8 @@ int rcar_du_planes_init(struct rcar_du_group *rgrp)
 
 		ret = drm_universal_plane_init(rcdu->ddev, &plane->plane, crtcs,
 					       &rcar_du_plane_funcs, formats,
-					       ARRAY_SIZE(formats), type);
+					       ARRAY_SIZE(formats), type,
+					       NULL);
 		if (ret < 0)
 			return ret;
 

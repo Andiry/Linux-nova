@@ -18,7 +18,7 @@ static int vmlinux_matches_kallsyms_filter(struct map *map __maybe_unused,
 
 #define UM(x) kallsyms_map->unmap_ip(kallsyms_map, (x))
 
-int test__vmlinux_matches_kallsyms(void)
+int test__vmlinux_matches_kallsyms(int subtest __maybe_unused)
 {
 	int err = -1;
 	struct rb_node *nd;
@@ -68,7 +68,7 @@ int test__vmlinux_matches_kallsyms(void)
 	 * to see if the running kernel was relocated by checking if it has the
 	 * same value in the vmlinux file we load.
 	 */
-	kallsyms_map = machine__kernel_map(&kallsyms, type);
+	kallsyms_map = machine__kernel_map(&kallsyms);
 
 	/*
 	 * Step 5:
@@ -80,7 +80,7 @@ int test__vmlinux_matches_kallsyms(void)
 		goto out;
 	}
 
-	vmlinux_map = machine__kernel_map(&vmlinux, type);
+	vmlinux_map = machine__kernel_map(&vmlinux);
 
 	/*
 	 * Step 6:

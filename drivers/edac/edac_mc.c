@@ -548,8 +548,7 @@ static void edac_mc_workq_function(struct work_struct *work_req)
 	mutex_unlock(&mem_ctls_mutex);
 
 	/* Reschedule */
-	queue_delayed_work(edac_workqueue, &mci->work,
-			msecs_to_jiffies(edac_mc_get_poll_msec()));
+	edac_queue_work(&mci->work, msecs_to_jiffies(edac_mc_get_poll_msec()));
 }
 
 /*
@@ -561,8 +560,7 @@ static void edac_mc_workq_function(struct work_struct *work_req)
  *
  *		called with the mem_ctls_mutex held
  */
-static void edac_mc_workq_setup(struct mem_ctl_info *mci, unsigned msec,
-				bool init)
+static void edac_mc_workq_setup(struct mem_ctl_info *mci, unsigned msec)
 {
 	edac_dbg(0, "\n");
 
@@ -570,10 +568,9 @@ static void edac_mc_workq_setup(struct mem_ctl_info *mci, unsigned msec,
 	if (mci->op_state != OP_RUNNING_POLL)
 		return;
 
-	if (init)
-		INIT_DELAYED_WORK(&mci->work, edac_mc_workq_function);
+	INIT_DELAYED_WORK(&mci->work, edac_mc_workq_function);
 
-	mod_delayed_work(edac_workqueue, &mci->work, msecs_to_jiffies(msec));
+	edac_queue_work(&mci->work, msecs_to_jiffies(msec));
 }
 
 /*
@@ -586,18 +583,9 @@ static void edac_mc_workq_setup(struct mem_ctl_info *mci, unsigned msec,
  */
 static void edac_mc_workq_teardown(struct mem_ctl_info *mci)
 {
-	int status;
+	mci->op_state = OP_OFFLINE;
 
-	if (mci->op_state != OP_RUNNING_POLL)
-		return;
-
-	status = cancel_delayed_work(&mci->work);
-	if (status == 0) {
-		edac_dbg(0, "not canceled, flush the queue\n");
-
-		/* workq instance might be running, wait for it */
-		flush_workqueue(edac_workqueue);
-	}
+	edac_stop_work(&mci->work);
 }
 
 /*
@@ -616,9 +604,8 @@ void edac_mc_reset_delay_period(unsigned long value)
 	list_for_each(item, &mc_devices) {
 		mci = list_entry(item, struct mem_ctl_info, link);
 
-		edac_mc_workq_setup(mci, value, false);
+		edac_mod_work(&mci->work, value);
 	}
-
 	mutex_unlock(&mem_ctls_mutex);
 }
 
@@ -789,7 +776,7 @@ int edac_mc_add_mc_with_groups(struct mem_ctl_info *mci,
 		/* This instance is NOW RUNNING */
 		mci->op_state = OP_RUNNING_POLL;
 
-		edac_mc_workq_setup(mci, edac_mc_get_poll_msec(), true);
+		edac_mc_workq_setup(mci, edac_mc_get_poll_msec());
 	} else {
 		mci->op_state = OP_RUNNING_INTERRUPT;
 	}
@@ -1302,7 +1289,7 @@ void edac_mc_handle_error(const enum hw_event_mc_err_type type,
 	grain_bits = fls_long(e->grain) + 1;
 	trace_mc_event(type, e->msg, e->label, e->error_count,
 		       mci->mc_idx, e->top_layer, e->mid_layer, e->low_layer,
-		       PAGES_TO_MiB(e->page_frame_number) | e->offset_in_page,
+		       (e->page_frame_number << PAGE_SHIFT) | e->offset_in_page,
 		       grain_bits, e->syndrome, e->other_detail);
 
 	edac_raw_mc_handle_error(type, mci, e);

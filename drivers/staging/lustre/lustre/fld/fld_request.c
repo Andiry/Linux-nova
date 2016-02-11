@@ -27,7 +27,7 @@
  * Copyright (c) 2007, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
  *
- * Copyright (c) 2011, 2013, Intel Corporation.
+ * Copyright (c) 2011, 2015, Intel Corporation.
  */
 /*
  * This file is part of Lustre, http://www.lustre.org/
@@ -52,7 +52,6 @@
 #include "../include/obd_support.h"
 #include "../include/lprocfs_status.h"
 
-#include "../include/dt_object.h"
 #include "../include/lustre_req_layout.h"
 #include "../include/lustre_fld.h"
 #include "../include/lustre_mdc.h"
@@ -502,7 +501,7 @@ static void __exit fld_mod_exit(void)
 		ldebugfs_remove(&fld_debugfs_dir);
 }
 
-MODULE_AUTHOR("Sun Microsystems, Inc. <http://www.lustre.org/>");
+MODULE_AUTHOR("OpenSFS, Inc. <http://www.lustre.org/>");
 MODULE_DESCRIPTION("Lustre FLD");
 MODULE_LICENSE("GPL");
 

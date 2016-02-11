@@ -23,7 +23,7 @@
 #include <linux/delay.h>
 #include <linux/device.h>
 #include <linux/err.h>
-#include <linux/gpio.h>
+#include <linux/gpio/driver.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/irq.h>
@@ -330,16 +330,6 @@ static inline void bcm2835_pinctrl_fsel_set(
 	bcm2835_gpio_wr(pc, FSEL_REG(pin), val);
 }
 
-static int bcm2835_gpio_request(struct gpio_chip *chip, unsigned offset)
-{
-	return pinctrl_request_gpio(chip->base + offset);
-}
-
-static void bcm2835_gpio_free(struct gpio_chip *chip, unsigned offset)
-{
-	pinctrl_free_gpio(chip->base + offset);
-}
-
 static int bcm2835_gpio_direction_input(struct gpio_chip *chip, unsigned offset)
 {
 	return pinctrl_gpio_direction_input(chip->base + offset);
@@ -347,27 +337,28 @@ static int bcm2835_gpio_direction_input(struct gpio_chip *chip, unsigned offset)
 
 static int bcm2835_gpio_get(struct gpio_chip *chip, unsigned offset)
 {
-	struct bcm2835_pinctrl *pc = dev_get_drvdata(chip->dev);
+	struct bcm2835_pinctrl *pc = gpiochip_get_data(chip);
 
 	return bcm2835_gpio_get_bit(pc, GPLEV0, offset);
+}
+
+static void bcm2835_gpio_set(struct gpio_chip *chip, unsigned offset, int value)
+{
+	struct bcm2835_pinctrl *pc = gpiochip_get_data(chip);
+
+	bcm2835_gpio_set_bit(pc, value ? GPSET0 : GPCLR0, offset);
 }
 
 static int bcm2835_gpio_direction_output(struct gpio_chip *chip,
 		unsigned offset, int value)
 {
+	bcm2835_gpio_set(chip, offset, value);
 	return pinctrl_gpio_direction_output(chip->base + offset);
-}
-
-static void bcm2835_gpio_set(struct gpio_chip *chip, unsigned offset, int value)
-{
-	struct bcm2835_pinctrl *pc = dev_get_drvdata(chip->dev);
-
-	bcm2835_gpio_set_bit(pc, value ? GPSET0 : GPCLR0, offset);
 }
 
 static int bcm2835_gpio_to_irq(struct gpio_chip *chip, unsigned offset)
 {
-	struct bcm2835_pinctrl *pc = dev_get_drvdata(chip->dev);
+	struct bcm2835_pinctrl *pc = gpiochip_get_data(chip);
 
 	return irq_linear_revmap(pc->irq_domain, offset);
 }
@@ -375,8 +366,8 @@ static int bcm2835_gpio_to_irq(struct gpio_chip *chip, unsigned offset)
 static struct gpio_chip bcm2835_gpio_chip = {
 	.label = MODULE_NAME,
 	.owner = THIS_MODULE,
-	.request = bcm2835_gpio_request,
-	.free = bcm2835_gpio_free,
+	.request = gpiochip_generic_request,
+	.free = gpiochip_generic_free,
 	.direction_input = bcm2835_gpio_direction_input,
 	.direction_output = bcm2835_gpio_direction_output,
 	.get = bcm2835_gpio_get,
@@ -804,7 +795,7 @@ static int bcm2835_pctl_dt_node_to_map(struct pinctrl_dev *pctldev,
 	return 0;
 
 out:
-	kfree(maps);
+	bcm2835_pctl_dt_free_map(pctldev, maps, num_pins * maps_per_pin);
 	return err;
 }
 
@@ -973,7 +964,7 @@ static int bcm2835_pinctrl_probe(struct platform_device *pdev)
 		return PTR_ERR(pc->base);
 
 	pc->gpio_chip = bcm2835_gpio_chip;
-	pc->gpio_chip.dev = dev;
+	pc->gpio_chip.parent = dev;
 	pc->gpio_chip.of_node = np;
 
 	pc->irq_domain = irq_domain_add_linear(np, BCM2835_NUM_GPIOS,
@@ -1030,7 +1021,7 @@ static int bcm2835_pinctrl_probe(struct platform_device *pdev)
 		}
 	}
 
-	err = gpiochip_add(&pc->gpio_chip);
+	err = gpiochip_add_data(&pc->gpio_chip, pc);
 	if (err) {
 		dev_err(dev, "could not add GPIO chip\n");
 		return err;

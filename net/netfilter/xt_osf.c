@@ -61,8 +61,8 @@ static const struct nla_policy xt_osf_policy[OSF_ATTR_MAX + 1] = {
 	[OSF_ATTR_FINGER]	= { .len = sizeof(struct xt_osf_user_finger) },
 };
 
-static int xt_osf_add_callback(struct sock *ctnl, struct sk_buff *skb,
-			       const struct nlmsghdr *nlh,
+static int xt_osf_add_callback(struct net *net, struct sock *ctnl,
+			       struct sk_buff *skb, const struct nlmsghdr *nlh,
 			       const struct nlattr * const osf_attrs[])
 {
 	struct xt_osf_user_finger *f;
@@ -104,7 +104,8 @@ static int xt_osf_add_callback(struct sock *ctnl, struct sk_buff *skb,
 	return err;
 }
 
-static int xt_osf_remove_callback(struct sock *ctnl, struct sk_buff *skb,
+static int xt_osf_remove_callback(struct net *net, struct sock *ctnl,
+				  struct sk_buff *skb,
 				  const struct nlmsghdr *nlh,
 				  const struct nlattr * const osf_attrs[])
 {
@@ -200,7 +201,7 @@ xt_osf_match_packet(const struct sk_buff *skb, struct xt_action_param *p)
 	unsigned char opts[MAX_IPOPTLEN];
 	const struct xt_osf_finger *kf;
 	const struct xt_osf_user_finger *f;
-	struct net *net = dev_net(p->in ? p->in : p->out);
+	struct net *net = p->net;
 
 	if (!info)
 		return false;

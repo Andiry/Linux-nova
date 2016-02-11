@@ -253,8 +253,10 @@ static int tegra_xusb_padctl_dt_node_to_map(struct pinctrl_dev *pinctrl,
 		err = tegra_xusb_padctl_parse_subnode(padctl, np, maps,
 						      &reserved_maps,
 						      num_maps);
-		if (err < 0)
+		if (err < 0) {
+			of_node_put(np);
 			return err;
+		}
 	}
 
 	return 0;
@@ -760,24 +762,15 @@ static const char * const tegra124_pcie_groups[] = {
 	"pcie-2",
 	"pcie-3",
 	"pcie-4",
-	"sata-0",
 };
 
 static const char * const tegra124_usb3_groups[] = {
 	"pcie-0",
 	"pcie-1",
-	"pcie-2",
-	"pcie-3",
-	"pcie-4",
 	"sata-0",
 };
 
 static const char * const tegra124_sata_groups[] = {
-	"pcie-0",
-	"pcie-1",
-	"pcie-2",
-	"pcie-3",
-	"pcie-4",
 	"sata-0",
 };
 

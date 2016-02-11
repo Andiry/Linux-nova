@@ -67,7 +67,7 @@ double rel_stddev_stats(double stddev, double avg)
 bool __perf_evsel_stat__is(struct perf_evsel *evsel,
 			   enum perf_stat_evsel_id id)
 {
-	struct perf_stat *ps = evsel->priv;
+	struct perf_stat_evsel *ps = evsel->priv;
 
 	return ps->id == id;
 }
@@ -84,7 +84,7 @@ static const char *id_str[PERF_STAT_EVSEL_ID__MAX] = {
 
 void perf_stat_evsel_id_init(struct perf_evsel *evsel)
 {
-	struct perf_stat *ps = evsel->priv;
+	struct perf_stat_evsel *ps = evsel->priv;
 	int i;
 
 	/* ps->id is 0 hence PERF_STAT_EVSEL_ID__NONE by default */
@@ -100,7 +100,7 @@ void perf_stat_evsel_id_init(struct perf_evsel *evsel)
 void perf_evsel__reset_stat_priv(struct perf_evsel *evsel)
 {
 	int i;
-	struct perf_stat *ps = evsel->priv;
+	struct perf_stat_evsel *ps = evsel->priv;
 
 	for (i = 0; i < 3; i++)
 		init_stats(&ps->res_stats[i]);
@@ -110,7 +110,7 @@ void perf_evsel__reset_stat_priv(struct perf_evsel *evsel)
 
 int perf_evsel__alloc_stat_priv(struct perf_evsel *evsel)
 {
-	evsel->priv = zalloc(sizeof(struct perf_stat));
+	evsel->priv = zalloc(sizeof(struct perf_stat_evsel));
 	if (evsel->priv == NULL)
 		return -ENOMEM;
 	perf_evsel__reset_stat_priv(evsel);
@@ -230,7 +230,7 @@ static int check_per_pkg(struct perf_evsel *counter,
 	if (!(vals->run && vals->ena))
 		return 0;
 
-	s = cpu_map__get_socket(cpus, cpu);
+	s = cpu_map__get_socket(cpus, cpu, NULL);
 	if (s < 0)
 		return -1;
 
@@ -272,6 +272,7 @@ process_counter_values(struct perf_stat_config *config, struct perf_evsel *evsel
 			aggr->ena += count->ena;
 			aggr->run += count->run;
 		}
+	case AGGR_UNSET:
 	default:
 		break;
 	}
@@ -304,12 +305,11 @@ int perf_stat_process_counter(struct perf_stat_config *config,
 			      struct perf_evsel *counter)
 {
 	struct perf_counts_values *aggr = &counter->counts->aggr;
-	struct perf_stat *ps = counter->priv;
+	struct perf_stat_evsel *ps = counter->priv;
 	u64 *count = counter->counts->aggr.values;
 	int i, ret;
 
 	aggr->val = aggr->ena = aggr->run = 0;
-	init_stats(ps->res_stats);
 
 	if (counter->per_pkg)
 		zero_per_pkg(counter);
@@ -339,4 +339,66 @@ int perf_stat_process_counter(struct perf_stat_config *config,
 	perf_stat__update_shadow_stats(counter, count, 0);
 
 	return 0;
+}
+
+int perf_event__process_stat_event(struct perf_tool *tool __maybe_unused,
+				   union perf_event *event,
+				   struct perf_session *session)
+{
+	struct perf_counts_values count;
+	struct stat_event *st = &event->stat;
+	struct perf_evsel *counter;
+
+	count.val = st->val;
+	count.ena = st->ena;
+	count.run = st->run;
+
+	counter = perf_evlist__id2evsel(session->evlist, st->id);
+	if (!counter) {
+		pr_err("Failed to resolve counter for stat event.\n");
+		return -EINVAL;
+	}
+
+	*perf_counts(counter->counts, st->cpu, st->thread) = count;
+	counter->supported = true;
+	return 0;
+}
+
+size_t perf_event__fprintf_stat(union perf_event *event, FILE *fp)
+{
+	struct stat_event *st = (struct stat_event *) event;
+	size_t ret;
+
+	ret  = fprintf(fp, "\n... id %" PRIu64 ", cpu %d, thread %d\n",
+		       st->id, st->cpu, st->thread);
+	ret += fprintf(fp, "... value %" PRIu64 ", enabled %" PRIu64 ", running %" PRIu64 "\n",
+		       st->val, st->ena, st->run);
+
+	return ret;
+}
+
+size_t perf_event__fprintf_stat_round(union perf_event *event, FILE *fp)
+{
+	struct stat_round_event *rd = (struct stat_round_event *)event;
+	size_t ret;
+
+	ret = fprintf(fp, "\n... time %" PRIu64 ", type %s\n", rd->time,
+		      rd->type == PERF_STAT_ROUND_TYPE__FINAL ? "FINAL" : "INTERVAL");
+
+	return ret;
+}
+
+size_t perf_event__fprintf_stat_config(union perf_event *event, FILE *fp)
+{
+	struct perf_stat_config sc;
+	size_t ret;
+
+	perf_event__read_stat_config(&sc, &event->stat_config);
+
+	ret  = fprintf(fp, "\n");
+	ret += fprintf(fp, "... aggr_mode %d\n", sc.aggr_mode);
+	ret += fprintf(fp, "... scale     %d\n", sc.scale);
+	ret += fprintf(fp, "... interval  %u\n", sc.interval);
+
+	return ret;
 }

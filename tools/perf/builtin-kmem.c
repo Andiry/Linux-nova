@@ -12,7 +12,7 @@
 #include "util/tool.h"
 #include "util/callchain.h"
 
-#include "util/parse-options.h"
+#include <subcmd/parse-options.h>
 #include "util/trace-event.h"
 #include "util/data.h"
 #include "util/cpumap.h"
@@ -329,7 +329,7 @@ static int build_alloc_func_list(void)
 		return -EINVAL;
 	}
 
-	kernel_map = machine->vmlinux_maps[MAP__FUNCTION];
+	kernel_map = machine__kernel_map(machine);
 	if (map__load(kernel_map, NULL) < 0) {
 		pr_err("cannot load kernel map\n");
 		return -ENOENT;

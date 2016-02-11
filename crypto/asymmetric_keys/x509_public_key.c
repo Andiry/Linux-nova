@@ -194,14 +194,15 @@ int x509_get_sig_params(struct x509_certificate *cert)
 	 * digest storage space.
 	 */
 	ret = -ENOMEM;
-	digest = kzalloc(digest_size + desc_size, GFP_KERNEL);
+	digest = kzalloc(ALIGN(digest_size, __alignof__(*desc)) + desc_size,
+			 GFP_KERNEL);
 	if (!digest)
 		goto error;
 
 	cert->sig.digest = digest;
 	cert->sig.digest_size = digest_size;
 
-	desc = digest + digest_size;
+	desc = PTR_ALIGN(digest + digest_size, __alignof__(*desc));
 	desc->tfm = tfm;
 	desc->flags = CRYPTO_TFM_REQ_MAY_SLEEP;
 
@@ -266,7 +267,8 @@ static int x509_validate_trust(struct x509_certificate *cert,
 	if (!IS_ERR(key))  {
 		if (!use_builtin_keys
 		    || test_bit(KEY_FLAG_BUILTIN, &key->flags))
-			ret = x509_check_signature(key->payload.data, cert);
+			ret = x509_check_signature(key->payload.data[asym_crypto],
+						   cert);
 		key_put(key);
 	}
 	return ret;
@@ -319,6 +321,8 @@ static int x509_key_preparse(struct key_preparsed_payload *prep)
 			goto error_free_cert;
 	} else if (!prep->trusted) {
 		ret = x509_validate_trust(cert, get_system_trusted_keyring());
+		if (ret)
+			ret = x509_validate_trust(cert, get_ima_mok_keyring());
 		if (!ret)
 			prep->trusted = 1;
 	}
@@ -352,9 +356,9 @@ static int x509_key_preparse(struct key_preparsed_payload *prep)
 
 	/* We're pinning the module by being linked against it */
 	__module_get(public_key_subtype.owner);
-	prep->type_data[0] = &public_key_subtype;
-	prep->type_data[1] = kids;
-	prep->payload[0] = cert->pub;
+	prep->payload.data[asym_subtype] = &public_key_subtype;
+	prep->payload.data[asym_key_ids] = kids;
+	prep->payload.data[asym_crypto] = cert->pub;
 	prep->description = desc;
 	prep->quotalen = 100;
 

@@ -35,6 +35,7 @@
 #include <asm/cpu.h>
 #include <asm/reboot.h>
 #include <asm/virtext.h>
+#include <asm/intel_pt.h>
 
 /* Alignment required for elf header segment */
 #define ELF_CORE_HEADER_ALIGN   4096
@@ -74,8 +75,6 @@ struct crash_memmap_data {
 	/* Type of memory */
 	unsigned int type;
 };
-
-int in_crash_kexec;
 
 /*
  * This is used to VMCLEAR all VMCSs loaded on the
@@ -127,12 +126,16 @@ static void kdump_nmi_callback(int cpu, struct pt_regs *regs)
 	cpu_emergency_vmxoff();
 	cpu_emergency_svm_disable();
 
+	/*
+	 * Disable Intel PT to stop its logging
+	 */
+	cpu_emergency_stop_pt();
+
 	disable_local_APIC();
 }
 
 static void kdump_nmi_shootdown_cpus(void)
 {
-	in_crash_kexec = 1;
 	nmi_shootdown_cpus(kdump_nmi_callback);
 
 	disable_local_APIC();
@@ -171,6 +174,11 @@ void native_machine_crash_shutdown(struct pt_regs *regs)
 	 */
 	cpu_emergency_vmxoff();
 	cpu_emergency_svm_disable();
+
+	/*
+	 * Disable Intel PT to stop its logging
+	 */
+	cpu_emergency_stop_pt();
 
 #ifdef CONFIG_X86_IO_APIC
 	/* Prevent crash_kexec() from deadlocking on ioapic_lock. */

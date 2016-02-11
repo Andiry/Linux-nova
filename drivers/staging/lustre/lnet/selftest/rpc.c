@@ -27,7 +27,7 @@
  * Copyright (c) 2007, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
  *
- * Copyright (c) 2012, Intel Corporation.
+ * Copyright (c) 2012, 2015, Intel Corporation.
  */
 /*
  * This file is part of Lustre, http://www.lustre.org/
@@ -146,7 +146,7 @@ srpc_alloc_bulk(int cpt, unsigned bulk_npg, unsigned bulk_len, int sink)
 		int nob;
 
 		pg = alloc_pages_node(cfs_cpt_spread_node(lnet_cpt_table(), cpt),
-				      GFP_IOFS, 0);
+				      GFP_KERNEL, 0);
 		if (pg == NULL) {
 			CERROR("Can't allocate page %d of %d\n", i, bulk_npg);
 			srpc_free_bulk(bk);
@@ -445,15 +445,6 @@ srpc_post_active_rdma(int portal, __u64 matchbits, void *buf, int len,
 }
 
 static int
-srpc_post_active_rqtbuf(lnet_process_id_t peer, int service, void *buf,
-			int len, lnet_handle_md_t *mdh, srpc_event_t *ev)
-{
-	return srpc_post_active_rdma(srpc_serv_portal(service), service,
-				     buf, len, LNET_MD_OP_PUT, peer,
-				     LNET_NID_ANY, mdh, ev);
-}
-
-static int
 srpc_post_passive_rqtbuf(int service, int local, void *buf, int len,
 			 lnet_handle_md_t *mdh, srpc_event_t *ev)
 {
@@ -565,7 +556,7 @@ srpc_add_buffer(struct swi_workitem *wi)
 	}
 
 	if (rc != 0) {
-		scd->scd_buf_err_stamp = get_seconds();
+		scd->scd_buf_err_stamp = ktime_get_real_seconds();
 		scd->scd_buf_err = rc;
 
 		LASSERT(scd->scd_buf_posting > 0);
@@ -798,9 +789,11 @@ srpc_send_request(srpc_client_rpc_t *rpc)
 	ev->ev_data  = rpc;
 	ev->ev_type  = SRPC_REQUEST_SENT;
 
-	rc = srpc_post_active_rqtbuf(rpc->crpc_dest, rpc->crpc_service,
-				     &rpc->crpc_reqstmsg, sizeof(srpc_msg_t),
-				     &rpc->crpc_reqstmdh, ev);
+	 rc = srpc_post_active_rdma(srpc_serv_portal(rpc->crpc_service),
+				    rpc->crpc_service, &rpc->crpc_reqstmsg,
+				    sizeof(srpc_msg_t), LNET_MD_OP_PUT,
+				    rpc->crpc_dest, LNET_NID_ANY,
+				    &rpc->crpc_reqstmdh, ev);
 	if (rc != 0) {
 		LASSERT(rc == -ENOMEM);
 		ev->ev_fired = 1;  /* no more event expected */
@@ -866,7 +859,7 @@ srpc_prepare_bulk(srpc_client_rpc_t *rpc)
 }
 
 static int
-srpc_do_bulk(srpc_server_rpc_t *rpc)
+srpc_do_bulk(struct srpc_server_rpc *rpc)
 {
 	srpc_event_t *ev = &rpc->srpc_ev;
 	srpc_bulk_t *bk = rpc->srpc_bulk;
@@ -894,7 +887,7 @@ srpc_do_bulk(srpc_server_rpc_t *rpc)
 
 /* only called from srpc_handle_rpc */
 static void
-srpc_server_rpc_done(srpc_server_rpc_t *rpc, int status)
+srpc_server_rpc_done(struct srpc_server_rpc *rpc, int status)
 {
 	struct srpc_service_cd *scd = rpc->srpc_scd;
 	struct srpc_service *sv  = scd->scd_svc;
@@ -1100,8 +1093,7 @@ srpc_add_client_rpc_timer(srpc_client_rpc_t *rpc)
 	INIT_LIST_HEAD(&timer->stt_list);
 	timer->stt_data    = rpc;
 	timer->stt_func    = srpc_client_rpc_expired;
-	timer->stt_expires = cfs_time_add(rpc->crpc_timeout,
-					  get_seconds());
+	timer->stt_expires = ktime_get_real_seconds() + rpc->crpc_timeout;
 	stt_add_timer(timer);
 	return;
 }
@@ -1355,7 +1347,6 @@ srpc_post_rpc(srpc_client_rpc_t *rpc)
 	return;
 }
 
-
 int
 srpc_send_reply(struct srpc_server_rpc *rpc)
 {
@@ -1406,7 +1397,7 @@ srpc_lnet_ev_handler(lnet_event_t *ev)
 	struct srpc_service_cd *scd;
 	srpc_event_t *rpcev = ev->md.user_ptr;
 	srpc_client_rpc_t *crpc;
-	srpc_server_rpc_t *srpc;
+	struct srpc_server_rpc *srpc;
 	srpc_buffer_t *buffer;
 	srpc_service_t *sv;
 	srpc_msg_t *msg;
@@ -1488,7 +1479,7 @@ srpc_lnet_ev_handler(lnet_event_t *ev)
 		}
 
 		if (scd->scd_buf_err_stamp != 0 &&
-		    scd->scd_buf_err_stamp < get_seconds()) {
+		    scd->scd_buf_err_stamp < ktime_get_real_seconds()) {
 			/* re-enable adding buffer */
 			scd->scd_buf_err_stamp = 0;
 			scd->scd_buf_err = 0;
@@ -1581,7 +1572,6 @@ srpc_lnet_ev_handler(lnet_event_t *ev)
 	}
 }
 
-
 int
 srpc_startup(void)
 {
@@ -1593,7 +1583,7 @@ srpc_startup(void)
 	/* 1 second pause to avoid timestamp reuse */
 	set_current_state(TASK_UNINTERRUPTIBLE);
 	schedule_timeout(cfs_time_seconds(1));
-	srpc_data.rpc_matchbits = ((__u64) get_seconds()) << 48;
+	srpc_data.rpc_matchbits = ((__u64)ktime_get_real_seconds()) << 48;
 
 	srpc_data.rpc_state = SRPC_STATE_NONE;
 

@@ -12,9 +12,6 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  *
  * File: rxtx.c
  *
@@ -101,8 +98,11 @@ static struct vnt_usb_send_context
 		}
 	}
 
-	if (ii == priv->num_tx_context)
+	if (ii == priv->num_tx_context) {
 		dev_dbg(&priv->usb->dev, "%s No Free Tx Context\n", __func__);
+
+		ieee80211_stop_queues(priv->hw);
+	}
 
 	return NULL;
 }

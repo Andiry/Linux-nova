@@ -28,10 +28,10 @@
 #include <asm/irq.h>
 #include <asm/suspend.h>
 #include <mach/irqs.h>
-#include <mach/pxa27x.h>
+#include "pxa27x.h"
 #include <mach/reset.h>
 #include <linux/platform_data/usb-ohci-pxa27x.h>
-#include <mach/pm.h>
+#include "pm.h"
 #include <mach/dma.h>
 #include <mach/smemc.h>
 
@@ -84,7 +84,7 @@ EXPORT_SYMBOL_GPL(pxa27x_configure_ac97reset);
  */
 static unsigned int pwrmode = PWRMODE_SLEEP;
 
-int __init pxa27x_set_pwrmode(unsigned int mode)
+int pxa27x_set_pwrmode(unsigned int mode)
 {
 	switch (mode) {
 	case PWRMODE_SLEEP:

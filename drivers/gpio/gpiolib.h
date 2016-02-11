@@ -16,7 +16,7 @@
 #include <linux/device.h>
 
 enum of_gpio_flags;
-
+enum gpiod_flags;
 struct acpi_device;
 
 /**
@@ -26,7 +26,8 @@ struct acpi_device;
  */
 struct acpi_gpio_info {
 	bool gpioint;
-	bool active_low;
+	int polarity;
+	int triggering;
 };
 
 /* gpio suffixes used for ACPI and device tree lookup */
@@ -42,8 +43,13 @@ void acpi_gpiochip_free_interrupts(struct gpio_chip *chip);
 struct gpio_desc *acpi_get_gpiod_by_index(struct acpi_device *adev,
 					  const char *propname, int index,
 					  struct acpi_gpio_info *info);
+struct gpio_desc *acpi_node_get_gpiod(struct fwnode_handle *fwnode,
+				      const char *propname, int index,
+				      struct acpi_gpio_info *info);
 
 int acpi_gpio_count(struct device *dev, const char *con_id);
+
+bool acpi_can_fallback_to_crs(struct acpi_device *adev, const char *con_id);
 #else
 static inline void acpi_gpiochip_add(struct gpio_chip *chip) { }
 static inline void acpi_gpiochip_remove(struct gpio_chip *chip) { }
@@ -60,10 +66,21 @@ acpi_get_gpiod_by_index(struct acpi_device *adev, const char *propname,
 {
 	return ERR_PTR(-ENOSYS);
 }
-
+static inline struct gpio_desc *
+acpi_node_get_gpiod(struct fwnode_handle *fwnode, const char *propname,
+		    int index, struct acpi_gpio_info *info)
+{
+	return ERR_PTR(-ENXIO);
+}
 static inline int acpi_gpio_count(struct device *dev, const char *con_id)
 {
 	return -ENODEV;
+}
+
+static inline bool acpi_can_fallback_to_crs(struct acpi_device *adev,
+					    const char *con_id)
+{
+	return false;
 }
 #endif
 
@@ -89,7 +106,10 @@ struct gpio_desc {
 #define FLAG_USED_AS_IRQ 9	/* GPIO is connected to an IRQ */
 #define FLAG_IS_HOGGED	11	/* GPIO is hogged */
 
+	/* Connection label */
 	const char		*label;
+	/* Name of the GPIO */
+	const char		*name;
 };
 
 int gpiod_request(struct gpio_desc *desc, const char *label);

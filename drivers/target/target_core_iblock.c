@@ -138,6 +138,8 @@ static int iblock_configure_device(struct se_device *dev)
 				q->limits.discard_granularity >> 9;
 		dev->dev_attrib.unmap_granularity_alignment =
 				q->limits.discard_alignment;
+		dev->dev_attrib.unmap_zeroes_data =
+				q->limits.discard_zeroes_data;
 
 		pr_debug("IBLOCK: BLOCK Discard support available,"
 				" disabled by default\n");
@@ -155,17 +157,17 @@ static int iblock_configure_device(struct se_device *dev)
 	if (bi) {
 		struct bio_set *bs = ib_dev->ibd_bio_set;
 
-		if (!strcmp(bi->name, "T10-DIF-TYPE3-IP") ||
-		    !strcmp(bi->name, "T10-DIF-TYPE1-IP")) {
+		if (!strcmp(bi->profile->name, "T10-DIF-TYPE3-IP") ||
+		    !strcmp(bi->profile->name, "T10-DIF-TYPE1-IP")) {
 			pr_err("IBLOCK export of blk_integrity: %s not"
-			       " supported\n", bi->name);
+			       " supported\n", bi->profile->name);
 			ret = -ENOSYS;
 			goto out_blkdev_put;
 		}
 
-		if (!strcmp(bi->name, "T10-DIF-TYPE3-CRC")) {
+		if (!strcmp(bi->profile->name, "T10-DIF-TYPE3-CRC")) {
 			dev->dev_attrib.pi_prot_type = TARGET_DIF_TYPE3_PROT;
-		} else if (!strcmp(bi->name, "T10-DIF-TYPE1-CRC")) {
+		} else if (!strcmp(bi->profile->name, "T10-DIF-TYPE1-CRC")) {
 			dev->dev_attrib.pi_prot_type = TARGET_DIF_TYPE1_PROT;
 		}
 
@@ -613,9 +615,9 @@ iblock_alloc_bip(struct se_cmd *cmd, struct bio *bio)
 	}
 
 	bip = bio_integrity_alloc(bio, GFP_NOIO, cmd->t_prot_nents);
-	if (!bip) {
+	if (IS_ERR(bip)) {
 		pr_err("Unable to allocate bio_integrity_payload\n");
-		return -ENOMEM;
+		return PTR_ERR(bip);
 	}
 
 	bip->bip_iter.bi_size = (cmd->data_length / dev->dev_attrib.block_size) *

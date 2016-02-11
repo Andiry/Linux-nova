@@ -62,7 +62,7 @@ struct insn_emulation {
 };
 
 static LIST_HEAD(insn_emulation);
-static int nr_insn_emulated;
+static int nr_insn_emulated __initdata;
 static DEFINE_RAW_SPINLOCK(insn_emulation_lock);
 
 static void register_emulation_hooks(struct insn_emulation_ops *ops)
@@ -173,7 +173,7 @@ static int update_insn_emulation_mode(struct insn_emulation *insn,
 	return ret;
 }
 
-static void register_insn_emulation(struct insn_emulation_ops *ops)
+static void __init register_insn_emulation(struct insn_emulation_ops *ops)
 {
 	unsigned long flags;
 	struct insn_emulation *insn;
@@ -237,7 +237,7 @@ static struct ctl_table ctl_abi[] = {
 	{ }
 };
 
-static void register_insn_emulation_sysctl(struct ctl_table *table)
+static void __init register_insn_emulation_sysctl(struct ctl_table *table)
 {
 	unsigned long flags;
 	int i = 0;
@@ -284,21 +284,23 @@ static void register_insn_emulation_sysctl(struct ctl_table *table)
 	__asm__ __volatile__(					\
 	ALTERNATIVE("nop", SET_PSTATE_PAN(0), ARM64_HAS_PAN,	\
 		    CONFIG_ARM64_PAN)				\
-	"	mov		%w2, %w1\n"			\
-	"0:	ldxr"B"		%w1, [%3]\n"			\
-	"1:	stxr"B"		%w0, %w2, [%3]\n"		\
+	"0:	ldxr"B"		%w2, [%3]\n"			\
+	"1:	stxr"B"		%w0, %w1, [%3]\n"		\
 	"	cbz		%w0, 2f\n"			\
 	"	mov		%w0, %w4\n"			\
+	"	b		3f\n"				\
 	"2:\n"							\
+	"	mov		%w1, %w2\n"			\
+	"3:\n"							\
 	"	.pushsection	 .fixup,\"ax\"\n"		\
 	"	.align		2\n"				\
-	"3:	mov		%w0, %w5\n"			\
-	"	b		2b\n"				\
+	"4:	mov		%w0, %w5\n"			\
+	"	b		3b\n"				\
 	"	.popsection"					\
 	"	.pushsection	 __ex_table,\"a\"\n"		\
 	"	.align		3\n"				\
-	"	.quad		0b, 3b\n"			\
-	"	.quad		1b, 3b\n"			\
+	"	.quad		0b, 4b\n"			\
+	"	.quad		1b, 4b\n"			\
 	"	.popsection\n"					\
 	ALTERNATIVE("nop", SET_PSTATE_PAN(1), ARM64_HAS_PAN,	\
 		CONFIG_ARM64_PAN)				\

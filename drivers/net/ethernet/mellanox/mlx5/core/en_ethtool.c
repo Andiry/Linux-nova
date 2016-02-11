@@ -345,9 +345,8 @@ static void mlx5e_get_channels(struct net_device *dev,
 			       struct ethtool_channels *ch)
 {
 	struct mlx5e_priv *priv = netdev_priv(dev);
-	int ncv = priv->mdev->priv.eq_table.num_comp_vectors;
 
-	ch->max_combined   = ncv;
+	ch->max_combined   = mlx5e_get_max_num_channels(priv->mdev);
 	ch->combined_count = priv->params.num_channels;
 }
 
@@ -355,7 +354,7 @@ static int mlx5e_set_channels(struct net_device *dev,
 			      struct ethtool_channels *ch)
 {
 	struct mlx5e_priv *priv = netdev_priv(dev);
-	int ncv = priv->mdev->priv.eq_table.num_comp_vectors;
+	int ncv = mlx5e_get_max_num_channels(priv->mdev);
 	unsigned int count = ch->combined_count;
 	bool was_opened;
 	int err = 0;
@@ -856,6 +855,35 @@ static int mlx5e_set_pauseparam(struct net_device *netdev,
 	return err;
 }
 
+static int mlx5e_get_ts_info(struct net_device *dev,
+			     struct ethtool_ts_info *info)
+{
+	struct mlx5e_priv *priv = netdev_priv(dev);
+	int ret;
+
+	ret = ethtool_op_get_ts_info(dev, info);
+	if (ret)
+		return ret;
+
+	info->phc_index = priv->tstamp.ptp ?
+			  ptp_clock_index(priv->tstamp.ptp) : -1;
+
+	if (!MLX5_CAP_GEN(priv->mdev, device_frequency_khz))
+		return 0;
+
+	info->so_timestamping |= SOF_TIMESTAMPING_TX_HARDWARE |
+				 SOF_TIMESTAMPING_RX_HARDWARE |
+				 SOF_TIMESTAMPING_RAW_HARDWARE;
+
+	info->tx_types = (BIT(1) << HWTSTAMP_TX_OFF) |
+			 (BIT(1) << HWTSTAMP_TX_ON);
+
+	info->rx_filters = (BIT(1) << HWTSTAMP_FILTER_NONE) |
+			   (BIT(1) << HWTSTAMP_FILTER_ALL);
+
+	return 0;
+}
+
 const struct ethtool_ops mlx5e_ethtool_ops = {
 	.get_drvinfo       = mlx5e_get_drvinfo,
 	.get_link          = ethtool_op_get_link,
@@ -879,4 +907,5 @@ const struct ethtool_ops mlx5e_ethtool_ops = {
 	.set_tunable       = mlx5e_set_tunable,
 	.get_pauseparam    = mlx5e_get_pauseparam,
 	.set_pauseparam    = mlx5e_set_pauseparam,
+	.get_ts_info       = mlx5e_get_ts_info,
 };

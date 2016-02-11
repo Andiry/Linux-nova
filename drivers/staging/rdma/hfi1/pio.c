@@ -435,7 +435,6 @@ int init_send_contexts(struct hfi1_devdata *dd)
 					sizeof(struct send_context_info),
 					GFP_KERNEL);
 	if (!dd->send_contexts || !dd->hw_to_sw) {
-		dd_dev_err(dd, "Unable to allocate send context arrays\n");
 		kfree(dd->hw_to_sw);
 		kfree(dd->send_contexts);
 		free_credit_return(dd);
@@ -661,6 +660,24 @@ void set_pio_integrity(struct send_context *sc)
 	write_kctxt_csr(dd, hw_context, SC(CHECK_ENABLE), reg);
 }
 
+static u32 get_buffers_allocated(struct send_context *sc)
+{
+	int cpu;
+	u32 ret = 0;
+
+	for_each_possible_cpu(cpu)
+		ret += *per_cpu_ptr(sc->buffers_allocated, cpu);
+	return ret;
+}
+
+static void reset_buffers_allocated(struct send_context *sc)
+{
+	int cpu;
+
+	for_each_possible_cpu(cpu)
+		(*per_cpu_ptr(sc->buffers_allocated, cpu)) = 0;
+}
+
 /*
  * Allocate a NUMA relative send context structure of the given type along
  * with a HW context.
@@ -669,7 +686,7 @@ struct send_context *sc_alloc(struct hfi1_devdata *dd, int type,
 			      uint hdrqentsize, int numa)
 {
 	struct send_context_info *sci;
-	struct send_context *sc;
+	struct send_context *sc = NULL;
 	dma_addr_t pa;
 	unsigned long flags;
 	u64 reg;
@@ -684,8 +701,15 @@ struct send_context *sc_alloc(struct hfi1_devdata *dd, int type,
 		return NULL;
 
 	sc = kzalloc_node(sizeof(struct send_context), GFP_KERNEL, numa);
-	if (!sc) {
-		dd_dev_err(dd, "Cannot allocate send context structure\n");
+	if (!sc)
+		return NULL;
+
+	sc->buffers_allocated = alloc_percpu(u32);
+	if (!sc->buffers_allocated) {
+		kfree(sc);
+		dd_dev_err(dd,
+			   "Cannot allocate buffers_allocated per cpu counters\n"
+			  );
 		return NULL;
 	}
 
@@ -693,6 +717,7 @@ struct send_context *sc_alloc(struct hfi1_devdata *dd, int type,
 	ret = sc_hw_alloc(dd, type, &sw_index, &hw_context);
 	if (ret) {
 		spin_unlock_irqrestore(&dd->sc_lock, flags);
+		free_percpu(sc->buffers_allocated);
 		kfree(sc);
 		return NULL;
 	}
@@ -708,7 +733,6 @@ struct send_context *sc_alloc(struct hfi1_devdata *dd, int type,
 	spin_lock_init(&sc->credit_ctrl_lock);
 	INIT_LIST_HEAD(&sc->piowait);
 	INIT_WORK(&sc->halt_work, sc_halted);
-	atomic_set(&sc->buffers_allocated, 0);
 	init_waitqueue_head(&sc->halt_wait);
 
 	/* grouping is always single context for now */
@@ -813,22 +837,21 @@ struct send_context *sc_alloc(struct hfi1_devdata *dd, int type,
 		sc->sr = kzalloc_node(sizeof(union pio_shadow_ring) *
 				sc->sr_size, GFP_KERNEL, numa);
 		if (!sc->sr) {
-			dd_dev_err(dd,
-				"Cannot allocate send context shadow ring structure\n");
 			sc_free(sc);
 			return NULL;
 		}
 	}
 
-	dd_dev_info(dd,
-		"Send context %u(%u) %s group %u credits %u credit_ctrl 0x%llx threshold %u\n",
-		sw_index,
-		hw_context,
-		sc_type_name(type),
-		sc->group,
-		sc->credits,
-		sc->credit_ctrl,
-		thresh);
+	hfi1_cdbg(PIO,
+		  "Send context %u(%u) %s group %u credits %u credit_ctrl 0x%llx threshold %u\n",
+		  sw_index,
+		  hw_context,
+		  sc_type_name(type),
+		  sc->group,
+		  sc->credits,
+		  sc->credit_ctrl,
+		  thresh);
+
 
 	return sc;
 }
@@ -870,6 +893,7 @@ void sc_free(struct send_context *sc)
 	spin_unlock_irqrestore(&dd->sc_lock, flags);
 
 	kfree(sc->sr);
+	free_percpu(sc->buffers_allocated);
 	kfree(sc);
 }
 
@@ -927,10 +951,12 @@ void sc_disable(struct send_context *sc)
 static void sc_wait_for_packet_egress(struct send_context *sc, int pause)
 {
 	struct hfi1_devdata *dd = sc->dd;
-	u64 reg;
+	u64 reg = 0;
+	u64 reg_prev;
 	u32 loop = 0;
 
 	while (1) {
+		reg_prev = reg;
 		reg = read_csr(dd, sc->hw_context * 8 +
 			       SEND_EGRESS_CTXT_STATUS);
 		/* done if egress is stopped */
@@ -939,11 +965,17 @@ static void sc_wait_for_packet_egress(struct send_context *sc, int pause)
 		reg = packet_occupancy(reg);
 		if (reg == 0)
 			break;
-		if (loop > 100) {
+		/* counter is reset if occupancy count changes */
+		if (reg != reg_prev)
+			loop = 0;
+		if (loop > 500) {
+			/* timed out - bounce the link */
 			dd_dev_err(dd,
-				"%s: context %u(%u) timeout waiting for packets to egress, remaining count %u\n",
+				"%s: context %u(%u) timeout waiting for packets to egress, remaining count %u, bouncing link\n",
 				__func__, sc->sw_index,
 				sc->hw_context, (u32)reg);
+			queue_work(dd->pport->hfi1_wq,
+				&dd->pport->link_bounce_work);
 			break;
 		}
 		loop++;
@@ -1025,7 +1057,7 @@ int sc_restart(struct send_context *sc)
 		/* kernel context */
 		loop = 0;
 		while (1) {
-			count = atomic_read(&sc->buffers_allocated);
+			count = get_buffers_allocated(sc);
 			if (count == 0)
 				break;
 			if (loop > 100) {
@@ -1193,7 +1225,8 @@ int sc_enable(struct send_context *sc)
 	sc->sr_head = 0;
 	sc->sr_tail = 0;
 	sc->flags = 0;
-	atomic_set(&sc->buffers_allocated, 0);
+	/* the alloc lock insures no fast path allocation */
+	reset_buffers_allocated(sc);
 
 	/*
 	 * Clear all per-context errors.  Some of these will be set when
@@ -1369,7 +1402,8 @@ retry:
 
 	/* there is enough room */
 
-	atomic_inc(&sc->buffers_allocated);
+	preempt_disable();
+	this_cpu_inc(*sc->buffers_allocated);
 
 	/* read this once */
 	head = sc->sr_head;
@@ -1561,6 +1595,7 @@ void sc_release_update(struct send_context *sc)
 	u64 hw_free;
 	u32 head, tail;
 	unsigned long old_free;
+	unsigned long free;
 	unsigned long extra;
 	unsigned long flags;
 	int code;
@@ -1575,7 +1610,7 @@ void sc_release_update(struct send_context *sc)
 	extra = (((hw_free & CR_COUNTER_SMASK) >> CR_COUNTER_SHIFT)
 			- (old_free & CR_COUNTER_MASK))
 				& CR_COUNTER_MASK;
-	sc->free = old_free + extra;
+	free = old_free + extra;
 	trace_hfi1_piofree(sc, extra);
 
 	/* call sent buffer callbacks */
@@ -1585,7 +1620,7 @@ void sc_release_update(struct send_context *sc)
 	while (head != tail) {
 		pbuf = &sc->sr[tail].pbuf;
 
-		if (sent_before(sc->free, pbuf->sent_at)) {
+		if (sent_before(free, pbuf->sent_at)) {
 			/* not sent yet */
 			break;
 		}
@@ -1599,8 +1634,10 @@ void sc_release_update(struct send_context *sc)
 		if (tail >= sc->sr_size)
 			tail = 0;
 	}
-	/* update tail, in case we moved it */
 	sc->sr_tail = tail;
+	/* make sure tail is updated before free */
+	smp_wmb();
+	sc->free = free;
 	spin_unlock_irqrestore(&sc->release_lock, flags);
 	sc_piobufavail(sc);
 }

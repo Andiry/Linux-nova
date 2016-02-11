@@ -22,7 +22,6 @@
 
 struct nicpf {
 	struct pci_dev		*pdev;
-	u8			rev_id;
 	u8			node;
 	unsigned int		flags;
 	u8			num_vf_en;      /* No of VF enabled */
@@ -44,6 +43,7 @@ struct nicpf {
 	u8			duplex[MAX_LMAC];
 	u32			speed[MAX_LMAC];
 	u16			cpi_base[MAX_NUM_VFS_SUPPORTED];
+	u16			rssi_base[MAX_NUM_VFS_SUPPORTED];
 	u16			rss_ind_tbl_size;
 	bool			mbx_lock[MAX_NUM_VFS_SUPPORTED];
 
@@ -117,7 +117,7 @@ static void nic_send_msg_to_vf(struct nicpf *nic, int vf, union nic_mbx *mbx)
 	 * when PF writes to MBOX(1), in next revisions when
 	 * PF writes to MBOX(0)
 	 */
-	if (nic->rev_id == 0) {
+	if (pass1_silicon(nic->pdev)) {
 		/* see the comment for nic_reg_write()/nic_reg_read()
 		 * functions above
 		 */
@@ -305,9 +305,6 @@ static void nic_init_hw(struct nicpf *nic)
 {
 	int i;
 
-	/* Reset NIC, in case the driver is repeatedly inserted and removed */
-	nic_reg_write(nic, NIC_PF_SOFT_RESET, 1);
-
 	/* Enable NIC HW block */
 	nic_reg_write(nic, NIC_PF_CFG, 0x3);
 
@@ -395,8 +392,18 @@ static void nic_config_cpi(struct nicpf *nic, struct cpi_cfg_msg *cfg)
 			padd = cpi % 8; /* 3 bits CS out of 6bits DSCP */
 
 		/* Leave RSS_SIZE as '0' to disable RSS */
-		nic_reg_write(nic, NIC_PF_CPI_0_2047_CFG | (cpi << 3),
-			      (vnic << 24) | (padd << 16) | (rssi_base + rssi));
+		if (pass1_silicon(nic->pdev)) {
+			nic_reg_write(nic, NIC_PF_CPI_0_2047_CFG | (cpi << 3),
+				      (vnic << 24) | (padd << 16) |
+				      (rssi_base + rssi));
+		} else {
+			/* Set MPI_ALG to '0' to disable MCAM parsing */
+			nic_reg_write(nic, NIC_PF_CPI_0_2047_CFG | (cpi << 3),
+				      (padd << 16));
+			/* MPI index is same as CPI if MPI_ALG is not enabled */
+			nic_reg_write(nic, NIC_PF_MPI_0_2047_CFG | (cpi << 3),
+				      (vnic << 24) | (rssi_base + rssi));
+		}
 
 		if ((rssi + 1) >= cfg->rq_cnt)
 			continue;
@@ -409,6 +416,7 @@ static void nic_config_cpi(struct nicpf *nic, struct cpi_cfg_msg *cfg)
 			rssi = ((cpi - cpi_base) & 0x38) >> 3;
 	}
 	nic->cpi_base[cfg->vf_id] = cpi_base;
+	nic->rssi_base[cfg->vf_id] = rssi_base;
 }
 
 /* Responsds to VF with its RSS indirection table size */
@@ -434,10 +442,9 @@ static void nic_config_rss(struct nicpf *nic, struct rss_cfg_msg *cfg)
 {
 	u8  qset, idx = 0;
 	u64 cpi_cfg, cpi_base, rssi_base, rssi;
+	u64 idx_addr;
 
-	cpi_base = nic->cpi_base[cfg->vf_id];
-	cpi_cfg = nic_reg_read(nic, NIC_PF_CPI_0_2047_CFG | (cpi_base << 3));
-	rssi_base = (cpi_cfg & 0x0FFF) + cfg->tbl_offset;
+	rssi_base = nic->rssi_base[cfg->vf_id] + cfg->tbl_offset;
 
 	rssi = rssi_base;
 	qset = cfg->vf_id;
@@ -454,9 +461,15 @@ static void nic_config_rss(struct nicpf *nic, struct rss_cfg_msg *cfg)
 		idx++;
 	}
 
+	cpi_base = nic->cpi_base[cfg->vf_id];
+	if (pass1_silicon(nic->pdev))
+		idx_addr = NIC_PF_CPI_0_2047_CFG;
+	else
+		idx_addr = NIC_PF_MPI_0_2047_CFG;
+	cpi_cfg = nic_reg_read(nic, idx_addr | (cpi_base << 3));
 	cpi_cfg &= ~(0xFULL << 20);
 	cpi_cfg |= (cfg->hash_bits << 20);
-	nic_reg_write(nic, NIC_PF_CPI_0_2047_CFG | (cpi_base << 3), cpi_cfg);
+	nic_reg_write(nic, idx_addr | (cpi_base << 3), cpi_cfg);
 }
 
 /* 4 level transmit side scheduler configutation
@@ -597,6 +610,21 @@ static int nic_config_loopback(struct nicpf *nic, struct set_loopback *lbk)
 	return 0;
 }
 
+static void nic_enable_vf(struct nicpf *nic, int vf, bool enable)
+{
+	int bgx, lmac;
+
+	nic->vf_enabled[vf] = enable;
+
+	if (vf >= nic->num_vf_en)
+		return;
+
+	bgx = NIC_GET_BGX_FROM_VF_LMAC_MAP(nic->vf_lmac_map[vf]);
+	lmac = NIC_GET_LMAC_FROM_VF_LMAC_MAP(nic->vf_lmac_map[vf]);
+
+	bgx_lmac_rx_tx_enable(nic->node, bgx, lmac, enable);
+}
+
 /* Interrupt handler to handle mailbox messages from VFs */
 static void nic_handle_mbx_intr(struct nicpf *nic, int vf)
 {
@@ -696,14 +724,14 @@ static void nic_handle_mbx_intr(struct nicpf *nic, int vf)
 		break;
 	case NIC_MBOX_MSG_CFG_DONE:
 		/* Last message of VF config msg sequence */
-		nic->vf_enabled[vf] = true;
+		nic_enable_vf(nic, vf, true);
 		goto unlock;
 	case NIC_MBOX_MSG_SHUTDOWN:
 		/* First msg in VF teardown sequence */
-		nic->vf_enabled[vf] = false;
 		if (vf >= nic->num_vf_en)
 			nic->sqs_used[vf - nic->num_vf_en] = false;
 		nic->pqs_vf[vf] = 0;
+		nic_enable_vf(nic, vf, false);
 		break;
 	case NIC_MBOX_MSG_ALLOC_SQS:
 		nic_alloc_sqs(nic, &mbx.sqs_alloc);
@@ -1001,8 +1029,6 @@ static int nic_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 		goto err_release_regions;
 	}
 
-	pci_read_config_byte(pdev, PCI_REVISION_ID, &nic->rev_id);
-
 	nic->node = nic_get_node_id(pdev);
 
 	nic_set_lmac_vf_mapping(nic);
@@ -1058,8 +1084,7 @@ static void nic_remove(struct pci_dev *pdev)
 
 	if (nic->check_link) {
 		/* Destroy work Queue */
-		cancel_delayed_work(&nic->dwork);
-		flush_workqueue(nic->check_link);
+		cancel_delayed_work_sync(&nic->dwork);
 		destroy_workqueue(nic->check_link);
 	}
 

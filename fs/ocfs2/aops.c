@@ -589,6 +589,7 @@ static int ocfs2_direct_IO_get_blocks(struct inode *inode, sector_t iblock,
 			ret = -EIO;
 			goto bail;
 		}
+		set_buffer_new(bh_result);
 		up_write(&OCFS2_I(inode)->ip_alloc_sem);
 	}
 
@@ -864,6 +865,7 @@ static ssize_t ocfs2_direct_IO_write(struct kiocb *iocb,
 		is_overwrite = ocfs2_is_overwrite(osb, inode, offset);
 		if (is_overwrite < 0) {
 			mlog_errno(is_overwrite);
+			ret = is_overwrite;
 			ocfs2_inode_unlock(inode, 1);
 			goto clean_orphan;
 		}
@@ -2044,9 +2046,9 @@ static int ocfs2_try_to_free_truncate_log(struct ocfs2_super *osb,
 	int ret = 0;
 	unsigned int truncated_clusters;
 
-	mutex_lock(&osb->osb_tl_inode->i_mutex);
+	inode_lock(osb->osb_tl_inode);
 	truncated_clusters = osb->truncated_clusters;
-	mutex_unlock(&osb->osb_tl_inode->i_mutex);
+	inode_unlock(osb->osb_tl_inode);
 
 	/*
 	 * Check whether we can succeed in allocating if we free

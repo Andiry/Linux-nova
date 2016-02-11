@@ -31,11 +31,13 @@ static const struct of_device_id s5c73m3_spi_ids[] = {
 	{ .compatible = "samsung,s5c73m3" },
 	{ }
 };
+MODULE_DEVICE_TABLE(of, s5c73m3_spi_ids);
 
 enum spi_direction {
 	SPI_DIR_RX,
 	SPI_DIR_TX
 };
+MODULE_DEVICE_TABLE(of, s5c73m3_spi_ids);
 
 static int spi_xmit(struct spi_device *spi_dev, void *addr, const int len,
 							enum spi_direction dir)
@@ -149,7 +151,6 @@ int s5c73m3_register_spi_driver(struct s5c73m3 *state)
 	spidrv->remove = s5c73m3_spi_remove;
 	spidrv->probe = s5c73m3_spi_probe;
 	spidrv->driver.name = S5C73M3_SPI_DRV_NAME;
-	spidrv->driver.owner = THIS_MODULE;
 	spidrv->driver.of_match_table = s5c73m3_spi_ids;
 
 	return spi_register_driver(spidrv);

@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2005 - 2015 Avago Technologies
+ * Copyright (C) 2005 - 2015 Emulex
  * All rights reserved.
  *
  * This program is free software; you can redistribute it and/or
@@ -10,7 +10,7 @@
  * Contact Information:
  * linux-drivers@avagotech.com
  *
- * Avago Technologies
+ * Emulex
  * 3333 Susan Street
  * Costa Mesa, CA 92626
  */
@@ -20,7 +20,7 @@
 
 #include <linux/pci.h>
 #include <linux/if_vlan.h>
-#include <linux/blk-iopoll.h>
+#include <linux/irq_poll.h>
 #define FW_VER_LEN	32
 #define MCC_Q_LEN	128
 #define MCC_CQ_LEN	256
@@ -101,7 +101,7 @@ struct be_eq_obj {
 	struct beiscsi_hba *phba;
 	struct be_queue_info *cq;
 	struct work_struct work_cqs; /* Work Item */
-	struct blk_iopoll	iopoll;
+	struct irq_poll	iopoll;
 };
 
 struct be_mcc_obj {

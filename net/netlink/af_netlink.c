@@ -2116,7 +2116,7 @@ int netlink_broadcast_filtered(struct sock *ssk, struct sk_buff *skb, u32 portid
 	consume_skb(info.skb2);
 
 	if (info.delivered) {
-		if (info.congested && (allocation & __GFP_WAIT))
+		if (info.congested && gfpflags_allow_blocking(allocation))
 			yield();
 		return 0;
 	}
@@ -2371,7 +2371,7 @@ static int netlink_getsockopt(struct socket *sock, int level, int optname,
 		int pos, idx, shift;
 
 		err = 0;
-		netlink_table_grab();
+		netlink_lock_table();
 		for (pos = 0; pos * 8 < nlk->ngroups; pos += sizeof(u32)) {
 			if (len - pos < sizeof(u32))
 				break;
@@ -2386,7 +2386,7 @@ static int netlink_getsockopt(struct socket *sock, int level, int optname,
 		}
 		if (put_user(ALIGN(nlk->ngroups / 8, sizeof(u32)), optlen))
 			err = -EFAULT;
-		netlink_table_ungrab();
+		netlink_unlock_table();
 		break;
 	}
 	case NETLINK_CAP_ACK:
@@ -2831,7 +2831,8 @@ static int netlink_dump(struct sock *sk)
 	 * reasonable static buffer based on the expected largest dump of a
 	 * single netdev. The outcome is MSG_TRUNC error.
 	 */
-	skb_reserve(skb, skb_tailroom(skb) - alloc_size);
+	if (!netlink_rx_is_mmaped(sk))
+		skb_reserve(skb, skb_tailroom(skb) - alloc_size);
 	netlink_skb_set_owner_r(skb, sk);
 
 	len = cb->dump(skb, cb);
@@ -2915,6 +2916,7 @@ int __netlink_dump_start(struct sock *ssk, struct sk_buff *skb,
 
 	cb = &nlk->cb;
 	memset(cb, 0, sizeof(*cb));
+	cb->start = control->start;
 	cb->dump = control->dump;
 	cb->done = control->done;
 	cb->nlh = nlh;
@@ -2926,6 +2928,9 @@ int __netlink_dump_start(struct sock *ssk, struct sk_buff *skb,
 	nlk->cb_running = true;
 
 	mutex_unlock(nlk->cb_mutex);
+
+	if (cb->start)
+		cb->start(cb);
 
 	ret = netlink_dump(sk);
 	sock_put(sk);

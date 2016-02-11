@@ -45,7 +45,7 @@
 
 static struct drm_framebuffer *
 internal_framebuffer_create(struct drm_device *dev,
-			    struct drm_mode_fb_cmd2 *r,
+			    const struct drm_mode_fb_cmd2 *r,
 			    struct drm_file *file_priv);
 
 /* Avoid boilerplate.  I'm tired of typing. */
@@ -306,8 +306,7 @@ static int drm_mode_object_get_reg(struct drm_device *dev,
  * reference counted modeset objects like framebuffers.
  *
  * Returns:
- * New unique (relative to other objects in @dev) integer identifier for the
- * object.
+ * Zero on success, error code on failure.
  */
 int drm_mode_object_get(struct drm_device *dev,
 			struct drm_mode_object *obj, uint32_t obj_type)
@@ -423,7 +422,7 @@ int drm_framebuffer_init(struct drm_device *dev, struct drm_framebuffer *fb,
 out:
 	mutex_unlock(&dev->mode_config.fb_lock);
 
-	return 0;
+	return ret;
 }
 EXPORT_SYMBOL(drm_framebuffer_init);
 
@@ -538,7 +537,12 @@ EXPORT_SYMBOL(drm_framebuffer_reference);
  */
 void drm_framebuffer_unregister_private(struct drm_framebuffer *fb)
 {
-	struct drm_device *dev = fb->dev;
+	struct drm_device *dev;
+
+	if (!fb)
+		return;
+
+	dev = fb->dev;
 
 	mutex_lock(&dev->mode_config.fb_lock);
 	/* Mark fb as reaped and drop idr ref. */
@@ -589,11 +593,16 @@ EXPORT_SYMBOL(drm_framebuffer_cleanup);
  */
 void drm_framebuffer_remove(struct drm_framebuffer *fb)
 {
-	struct drm_device *dev = fb->dev;
+	struct drm_device *dev;
 	struct drm_crtc *crtc;
 	struct drm_plane *plane;
 	struct drm_mode_set set;
 	int ret;
+
+	if (!fb)
+		return;
+
+	dev = fb->dev;
 
 	WARN_ON(!list_empty(&fb->filp_head));
 
@@ -640,6 +649,18 @@ EXPORT_SYMBOL(drm_framebuffer_remove);
 
 DEFINE_WW_CLASS(crtc_ww_class);
 
+static unsigned int drm_num_crtcs(struct drm_device *dev)
+{
+	unsigned int num = 0;
+	struct drm_crtc *tmp;
+
+	drm_for_each_crtc(tmp, dev) {
+		num++;
+	}
+
+	return num;
+}
+
 /**
  * drm_crtc_init_with_planes - Initialise a new CRTC object with
  *    specified primary and cursor planes.
@@ -648,6 +669,7 @@ DEFINE_WW_CLASS(crtc_ww_class);
  * @primary: Primary plane for CRTC
  * @cursor: Cursor plane for CRTC
  * @funcs: callbacks for the new CRTC
+ * @name: printf style format string for the CRTC name, or NULL for default name
  *
  * Inits a new object created as base part of a driver crtc object.
  *
@@ -657,7 +679,8 @@ DEFINE_WW_CLASS(crtc_ww_class);
 int drm_crtc_init_with_planes(struct drm_device *dev, struct drm_crtc *crtc,
 			      struct drm_plane *primary,
 			      struct drm_plane *cursor,
-			      const struct drm_crtc_funcs *funcs)
+			      const struct drm_crtc_funcs *funcs,
+			      const char *name, ...)
 {
 	struct drm_mode_config *config = &dev->mode_config;
 	int ret;
@@ -667,12 +690,26 @@ int drm_crtc_init_with_planes(struct drm_device *dev, struct drm_crtc *crtc,
 
 	crtc->dev = dev;
 	crtc->funcs = funcs;
-	crtc->invert_dimensions = false;
 
 	drm_modeset_lock_init(&crtc->mutex);
 	ret = drm_mode_object_get(dev, &crtc->base, DRM_MODE_OBJECT_CRTC);
 	if (ret)
 		return ret;
+
+	if (name) {
+		va_list ap;
+
+		va_start(ap, name);
+		crtc->name = kvasprintf(GFP_KERNEL, name, ap);
+		va_end(ap);
+	} else {
+		crtc->name = kasprintf(GFP_KERNEL, "crtc-%d",
+				       drm_num_crtcs(dev));
+	}
+	if (!crtc->name) {
+		drm_mode_object_put(dev, &crtc->base);
+		return -ENOMEM;
+	}
 
 	crtc->base.properties = &crtc->properties;
 
@@ -719,6 +756,8 @@ void drm_crtc_cleanup(struct drm_crtc *crtc)
 	WARN_ON(crtc->state && !crtc->funcs->atomic_destroy_state);
 	if (crtc->state && crtc->funcs->atomic_destroy_state)
 		crtc->funcs->atomic_destroy_state(crtc, crtc->state);
+
+	kfree(crtc->name);
 
 	memset(crtc, 0, sizeof(*crtc));
 }
@@ -1067,6 +1106,7 @@ EXPORT_SYMBOL(drm_connector_unplug_all);
  * @encoder: the encoder to init
  * @funcs: callbacks for this encoder
  * @encoder_type: user visible type of the encoder
+ * @name: printf style format string for the encoder name, or NULL for default name
  *
  * Initialises a preallocated encoder. Encoder should be
  * subclassed as part of driver encoder objects.
@@ -1077,7 +1117,7 @@ EXPORT_SYMBOL(drm_connector_unplug_all);
 int drm_encoder_init(struct drm_device *dev,
 		      struct drm_encoder *encoder,
 		      const struct drm_encoder_funcs *funcs,
-		      int encoder_type)
+		      int encoder_type, const char *name, ...)
 {
 	int ret;
 
@@ -1090,9 +1130,17 @@ int drm_encoder_init(struct drm_device *dev,
 	encoder->dev = dev;
 	encoder->encoder_type = encoder_type;
 	encoder->funcs = funcs;
-	encoder->name = kasprintf(GFP_KERNEL, "%s-%d",
-				  drm_encoder_enum_list[encoder_type].name,
-				  encoder->base.id);
+	if (name) {
+		va_list ap;
+
+		va_start(ap, name);
+		encoder->name = kvasprintf(GFP_KERNEL, name, ap);
+		va_end(ap);
+	} else {
+		encoder->name = kasprintf(GFP_KERNEL, "%s-%d",
+					  drm_encoder_enum_list[encoder_type].name,
+					  encoder->base.id);
+	}
 	if (!encoder->name) {
 		ret = -ENOMEM;
 		goto out_put;
@@ -1133,6 +1181,18 @@ void drm_encoder_cleanup(struct drm_encoder *encoder)
 }
 EXPORT_SYMBOL(drm_encoder_cleanup);
 
+static unsigned int drm_num_planes(struct drm_device *dev)
+{
+	unsigned int num = 0;
+	struct drm_plane *tmp;
+
+	drm_for_each_plane(tmp, dev) {
+		num++;
+	}
+
+	return num;
+}
+
 /**
  * drm_universal_plane_init - Initialize a new universal plane object
  * @dev: DRM device
@@ -1142,6 +1202,7 @@ EXPORT_SYMBOL(drm_encoder_cleanup);
  * @formats: array of supported formats (%DRM_FORMAT_*)
  * @format_count: number of elements in @formats
  * @type: type of plane (overlay, primary, cursor)
+ * @name: printf style format string for the plane name, or NULL for default name
  *
  * Initializes a plane object of type @type.
  *
@@ -1152,7 +1213,8 @@ int drm_universal_plane_init(struct drm_device *dev, struct drm_plane *plane,
 			     unsigned long possible_crtcs,
 			     const struct drm_plane_funcs *funcs,
 			     const uint32_t *formats, unsigned int format_count,
-			     enum drm_plane_type type)
+			     enum drm_plane_type type,
+			     const char *name, ...)
 {
 	struct drm_mode_config *config = &dev->mode_config;
 	int ret;
@@ -1170,6 +1232,22 @@ int drm_universal_plane_init(struct drm_device *dev, struct drm_plane *plane,
 					    GFP_KERNEL);
 	if (!plane->format_types) {
 		DRM_DEBUG_KMS("out of memory when allocating plane\n");
+		drm_mode_object_put(dev, &plane->base);
+		return -ENOMEM;
+	}
+
+	if (name) {
+		va_list ap;
+
+		va_start(ap, name);
+		plane->name = kvasprintf(GFP_KERNEL, name, ap);
+		va_end(ap);
+	} else {
+		plane->name = kasprintf(GFP_KERNEL, "plane-%d",
+					drm_num_planes(dev));
+	}
+	if (!plane->name) {
+		kfree(plane->format_types);
 		drm_mode_object_put(dev, &plane->base);
 		return -ENOMEM;
 	}
@@ -1232,7 +1310,7 @@ int drm_plane_init(struct drm_device *dev, struct drm_plane *plane,
 
 	type = is_primary ? DRM_PLANE_TYPE_PRIMARY : DRM_PLANE_TYPE_OVERLAY;
 	return drm_universal_plane_init(dev, plane, possible_crtcs, funcs,
-					formats, format_count, type);
+					formats, format_count, type, NULL);
 }
 EXPORT_SYMBOL(drm_plane_init);
 
@@ -1263,6 +1341,8 @@ void drm_plane_cleanup(struct drm_plane *plane)
 	WARN_ON(plane->state && !plane->funcs->atomic_destroy_state);
 	if (plane->state && plane->funcs->atomic_destroy_state)
 		plane->funcs->atomic_destroy_state(plane, plane->state);
+
+	kfree(plane->name);
 
 	memset(plane, 0, sizeof(*plane));
 }
@@ -1509,7 +1589,7 @@ EXPORT_SYMBOL(drm_mode_create_dvi_i_properties);
  */
 int drm_mode_create_tv_properties(struct drm_device *dev,
 				  unsigned int num_modes,
-				  char *modes[])
+				  const char * const modes[])
 {
 	struct drm_property *tv_selector;
 	struct drm_property *tv_subconnector;
@@ -1525,6 +1605,9 @@ int drm_mode_create_tv_properties(struct drm_device *dev,
 					  "select subconnector",
 					  drm_tv_select_enum_list,
 					  ARRAY_SIZE(drm_tv_select_enum_list));
+	if (!tv_selector)
+		goto nomem;
+
 	dev->mode_config.tv_select_subconnector_property = tv_selector;
 
 	tv_subconnector =
@@ -1532,6 +1615,8 @@ int drm_mode_create_tv_properties(struct drm_device *dev,
 				    "subconnector",
 				    drm_tv_subconnector_enum_list,
 				    ARRAY_SIZE(drm_tv_subconnector_enum_list));
+	if (!tv_subconnector)
+		goto nomem;
 	dev->mode_config.tv_subconnector_property = tv_subconnector;
 
 	/*
@@ -1539,42 +1624,67 @@ int drm_mode_create_tv_properties(struct drm_device *dev,
 	 */
 	dev->mode_config.tv_left_margin_property =
 		drm_property_create_range(dev, 0, "left margin", 0, 100);
+	if (!dev->mode_config.tv_left_margin_property)
+		goto nomem;
 
 	dev->mode_config.tv_right_margin_property =
 		drm_property_create_range(dev, 0, "right margin", 0, 100);
+	if (!dev->mode_config.tv_right_margin_property)
+		goto nomem;
 
 	dev->mode_config.tv_top_margin_property =
 		drm_property_create_range(dev, 0, "top margin", 0, 100);
+	if (!dev->mode_config.tv_top_margin_property)
+		goto nomem;
 
 	dev->mode_config.tv_bottom_margin_property =
 		drm_property_create_range(dev, 0, "bottom margin", 0, 100);
+	if (!dev->mode_config.tv_bottom_margin_property)
+		goto nomem;
 
 	dev->mode_config.tv_mode_property =
 		drm_property_create(dev, DRM_MODE_PROP_ENUM,
 				    "mode", num_modes);
+	if (!dev->mode_config.tv_mode_property)
+		goto nomem;
+
 	for (i = 0; i < num_modes; i++)
 		drm_property_add_enum(dev->mode_config.tv_mode_property, i,
 				      i, modes[i]);
 
 	dev->mode_config.tv_brightness_property =
 		drm_property_create_range(dev, 0, "brightness", 0, 100);
+	if (!dev->mode_config.tv_brightness_property)
+		goto nomem;
 
 	dev->mode_config.tv_contrast_property =
 		drm_property_create_range(dev, 0, "contrast", 0, 100);
+	if (!dev->mode_config.tv_contrast_property)
+		goto nomem;
 
 	dev->mode_config.tv_flicker_reduction_property =
 		drm_property_create_range(dev, 0, "flicker reduction", 0, 100);
+	if (!dev->mode_config.tv_flicker_reduction_property)
+		goto nomem;
 
 	dev->mode_config.tv_overscan_property =
 		drm_property_create_range(dev, 0, "overscan", 0, 100);
+	if (!dev->mode_config.tv_overscan_property)
+		goto nomem;
 
 	dev->mode_config.tv_saturation_property =
 		drm_property_create_range(dev, 0, "saturation", 0, 100);
+	if (!dev->mode_config.tv_saturation_property)
+		goto nomem;
 
 	dev->mode_config.tv_hue_property =
 		drm_property_create_range(dev, 0, "hue", 0, 100);
+	if (!dev->mode_config.tv_hue_property)
+		goto nomem;
 
 	return 0;
+nomem:
+	return -ENOMEM;
 }
 EXPORT_SYMBOL(drm_mode_create_tv_properties);
 
@@ -1763,7 +1873,8 @@ int drm_mode_getresources(struct drm_device *dev, void *data,
 		copied = 0;
 		crtc_id = (uint32_t __user *)(unsigned long)card_res->crtc_id_ptr;
 		drm_for_each_crtc(crtc, dev) {
-			DRM_DEBUG_KMS("[CRTC:%d]\n", crtc->base.id);
+			DRM_DEBUG_KMS("[CRTC:%d:%s]\n",
+				      crtc->base.id, crtc->name);
 			if (put_user(crtc->base.id, crtc_id + copied)) {
 				ret = -EFAULT;
 				goto out;
@@ -2276,6 +2387,32 @@ int drm_plane_check_pixel_format(const struct drm_plane *plane, u32 format)
 	return -EINVAL;
 }
 
+static int check_src_coords(uint32_t src_x, uint32_t src_y,
+			    uint32_t src_w, uint32_t src_h,
+			    const struct drm_framebuffer *fb)
+{
+	unsigned int fb_width, fb_height;
+
+	fb_width = fb->width << 16;
+	fb_height = fb->height << 16;
+
+	/* Make sure source coordinates are inside the fb. */
+	if (src_w > fb_width ||
+	    src_x > fb_width - src_w ||
+	    src_h > fb_height ||
+	    src_y > fb_height - src_h) {
+		DRM_DEBUG_KMS("Invalid source coordinates "
+			      "%u.%06ux%u.%06u+%u.%06u+%u.%06u\n",
+			      src_w >> 16, ((src_w & 0xffff) * 15625) >> 10,
+			      src_h >> 16, ((src_h & 0xffff) * 15625) >> 10,
+			      src_x >> 16, ((src_x & 0xffff) * 15625) >> 10,
+			      src_y >> 16, ((src_y & 0xffff) * 15625) >> 10);
+		return -ENOSPC;
+	}
+
+	return 0;
+}
+
 /*
  * setplane_internal - setplane handler for internal callers
  *
@@ -2295,7 +2432,6 @@ static int __setplane_internal(struct drm_plane *plane,
 			       uint32_t src_w, uint32_t src_h)
 {
 	int ret = 0;
-	unsigned int fb_width, fb_height;
 
 	/* No fb means shut it down */
 	if (!fb) {
@@ -2332,27 +2468,13 @@ static int __setplane_internal(struct drm_plane *plane,
 	    crtc_y > INT_MAX - (int32_t) crtc_h) {
 		DRM_DEBUG_KMS("Invalid CRTC coordinates %ux%u+%d+%d\n",
 			      crtc_w, crtc_h, crtc_x, crtc_y);
-		return -ERANGE;
-	}
-
-
-	fb_width = fb->width << 16;
-	fb_height = fb->height << 16;
-
-	/* Make sure source coordinates are inside the fb. */
-	if (src_w > fb_width ||
-	    src_x > fb_width - src_w ||
-	    src_h > fb_height ||
-	    src_y > fb_height - src_h) {
-		DRM_DEBUG_KMS("Invalid source coordinates "
-			      "%u.%06ux%u.%06u+%u.%06u+%u.%06u\n",
-			      src_w >> 16, ((src_w & 0xffff) * 15625) >> 10,
-			      src_h >> 16, ((src_h & 0xffff) * 15625) >> 10,
-			      src_x >> 16, ((src_x & 0xffff) * 15625) >> 10,
-			      src_y >> 16, ((src_y & 0xffff) * 15625) >> 10);
-		ret = -ENOSPC;
+		ret = -ERANGE;
 		goto out;
 	}
+
+	ret = check_src_coords(src_x, src_y, src_w, src_h, fb);
+	if (ret)
+		goto out;
 
 	plane->old_fb = plane->fb;
 	ret = plane->funcs->update_plane(plane, crtc, fb,
@@ -2543,20 +2665,13 @@ int drm_crtc_check_viewport(const struct drm_crtc *crtc,
 
 	drm_crtc_get_hv_timing(mode, &hdisplay, &vdisplay);
 
-	if (crtc->invert_dimensions)
+	if (crtc->state &&
+	    crtc->primary->state->rotation & (BIT(DRM_ROTATE_90) |
+					      BIT(DRM_ROTATE_270)))
 		swap(hdisplay, vdisplay);
 
-	if (hdisplay > fb->width ||
-	    vdisplay > fb->height ||
-	    x > fb->width - hdisplay ||
-	    y > fb->height - vdisplay) {
-		DRM_DEBUG_KMS("Invalid fb size %ux%u for CRTC viewport %ux%u+%d+%d%s.\n",
-			      fb->width, fb->height, hdisplay, vdisplay, x, y,
-			      crtc->invert_dimensions ? " (inverted)" : "");
-		return -ENOSPC;
-	}
-
-	return 0;
+	return check_src_coords(x << 16, y << 16,
+				hdisplay << 16, vdisplay << 16, fb);
 }
 EXPORT_SYMBOL(drm_crtc_check_viewport);
 
@@ -2604,7 +2719,7 @@ int drm_mode_setcrtc(struct drm_device *dev, void *data,
 		ret = -ENOENT;
 		goto out;
 	}
-	DRM_DEBUG_KMS("[CRTC:%d]\n", crtc->base.id);
+	DRM_DEBUG_KMS("[CRTC:%d:%s]\n", crtc->base.id, crtc->name);
 
 	if (crtc_req->mode_valid) {
 		/* If we have a mode we need a framebuffer. */
@@ -3193,7 +3308,7 @@ static int framebuffer_check(const struct drm_mode_fb_cmd2 *r)
 
 static struct drm_framebuffer *
 internal_framebuffer_create(struct drm_device *dev,
-			    struct drm_mode_fb_cmd2 *r,
+			    const struct drm_mode_fb_cmd2 *r,
 			    struct drm_file *file_priv)
 {
 	struct drm_mode_config *config = &dev->mode_config;
@@ -3310,14 +3425,11 @@ int drm_mode_rmfb(struct drm_device *dev,
 	if (!found)
 		goto fail_lookup;
 
-	/* Mark fb as reaped, we still have a ref from fpriv->fbs. */
-	__drm_framebuffer_unregister(dev, fb);
-
 	list_del_init(&fb->filp_head);
 	mutex_unlock(&dev->mode_config.fb_lock);
 	mutex_unlock(&file_priv->fbs_lock);
 
-	drm_framebuffer_remove(fb);
+	drm_framebuffer_unreference(fb);
 
 	return 0;
 
@@ -3484,7 +3596,6 @@ out_err1:
  */
 void drm_fb_release(struct drm_file *priv)
 {
-	struct drm_device *dev = priv->minor->dev;
 	struct drm_framebuffer *fb, *tfb;
 
 	/*
@@ -3498,16 +3609,10 @@ void drm_fb_release(struct drm_file *priv)
 	 * at it any more.
 	 */
 	list_for_each_entry_safe(fb, tfb, &priv->fbs, filp_head) {
-
-		mutex_lock(&dev->mode_config.fb_lock);
-		/* Mark fb as reaped, we still have a ref from fpriv->fbs. */
-		__drm_framebuffer_unregister(dev, fb);
-		mutex_unlock(&dev->mode_config.fb_lock);
-
 		list_del_init(&fb->filp_head);
 
-		/* This will also drop the fpriv->fbs reference. */
-		drm_framebuffer_remove(fb);
+		/* This drops the fpriv->fbs reference. */
+		drm_framebuffer_unreference(fb);
 	}
 }
 
@@ -4105,7 +4210,7 @@ drm_property_create_blob(struct drm_device *dev, size_t length,
 	struct drm_property_blob *blob;
 	int ret;
 
-	if (!length)
+	if (!length || length > ULONG_MAX - sizeof(struct drm_property_blob))
 		return ERR_PTR(-EINVAL);
 
 	blob = kzalloc(sizeof(struct drm_property_blob)+length, GFP_KERNEL);
@@ -4454,7 +4559,7 @@ int drm_mode_createblob_ioctl(struct drm_device *dev,
 	 * not associated with any file_priv. */
 	mutex_lock(&dev->mode_config.blob_lock);
 	out_resp->blob_id = blob->base.id;
-	list_add_tail(&file_priv->blobs, &blob->head_file);
+	list_add_tail(&blob->head_file, &file_priv->blobs);
 	mutex_unlock(&dev->mode_config.blob_lock);
 
 	return 0;
@@ -4753,9 +4858,7 @@ static int drm_mode_connector_set_obj_prop(struct drm_mode_object *obj,
 
 	/* Do DPMS ourselves */
 	if (property == connector->dev->mode_config.dpms_property) {
-		ret = 0;
-		if (connector->funcs->dpms)
-			ret = (*connector->funcs->dpms)(connector, (int)value);
+		ret = (*connector->funcs->dpms)(connector, (int)value);
 	} else if (connector->funcs->set_property)
 		ret = connector->funcs->set_property(connector, property, value);
 
@@ -4950,6 +5053,20 @@ int drm_mode_connector_attach_encoder(struct drm_connector *connector,
 				      struct drm_encoder *encoder)
 {
 	int i;
+
+	/*
+	 * In the past, drivers have attempted to model the static association
+	 * of connector to encoder in simple connector/encoder devices using a
+	 * direct assignment of connector->encoder = encoder. This connection
+	 * is a logical one and the responsibility of the core, so drivers are
+	 * expected not to mess with this.
+	 *
+	 * Note that the error return should've been enough here, but a large
+	 * majority of drivers ignores the return value, so add in a big WARN
+	 * to get people's attention.
+	 */
+	if (WARN_ON(connector->encoder))
+		return -EINVAL;
 
 	for (i = 0; i < DRM_CONNECTOR_MAX_ENCODER; i++) {
 		if (connector->encoder_ids[i] == 0) {
@@ -5181,7 +5298,14 @@ int drm_mode_page_flip_ioctl(struct drm_device *dev,
 		goto out;
 	}
 
-	ret = drm_crtc_check_viewport(crtc, crtc->x, crtc->y, &crtc->mode, fb);
+	if (crtc->state) {
+		const struct drm_plane_state *state = crtc->primary->state;
+
+		ret = check_src_coords(state->src_x, state->src_y,
+				       state->src_w, state->src_h, fb);
+	} else {
+		ret = drm_crtc_check_viewport(crtc, crtc->x, crtc->y, &crtc->mode, fb);
+	}
 	if (ret)
 		goto out;
 
@@ -5629,7 +5753,8 @@ unsigned int drm_rotation_simplify(unsigned int rotation,
 {
 	if (rotation & ~supported_rotations) {
 		rotation ^= BIT(DRM_REFLECT_X) | BIT(DRM_REFLECT_Y);
-		rotation = (rotation & ~0xf) | BIT((ffs(rotation & 0xf) + 1) % 4);
+		rotation = (rotation & DRM_REFLECT_MASK) |
+		           BIT((ffs(rotation & DRM_ROTATE_MASK) + 1) % 4);
 	}
 
 	return rotation;
@@ -5732,7 +5857,7 @@ void drm_mode_config_cleanup(struct drm_device *dev)
 	 */
 	WARN_ON(!list_empty(&dev->mode_config.fb_list));
 	list_for_each_entry_safe(fb, fbt, &dev->mode_config.fb_list, head) {
-		drm_framebuffer_remove(fb);
+		drm_framebuffer_free(&fb->refcount);
 	}
 
 	list_for_each_entry_safe(plane, plt, &dev->mode_config.plane_list,

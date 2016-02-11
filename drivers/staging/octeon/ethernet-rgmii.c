@@ -78,7 +78,7 @@ static void cvm_oct_rgmii_poll(struct net_device *dev)
 		 */
 		spin_lock_irqsave(&global_register_lock, flags);
 	} else {
-		mutex_lock(&priv->phydev->bus->mdio_lock);
+		mutex_lock(&priv->phydev->mdio.bus->mdio_lock);
 	}
 
 	link_info = cvmx_helper_link_get(priv->port);
@@ -113,7 +113,7 @@ static void cvm_oct_rgmii_poll(struct net_device *dev)
 		if (use_global_register_lock)
 			spin_unlock_irqrestore(&global_register_lock, flags);
 		else
-			mutex_unlock(&priv->phydev->bus->mdio_lock);
+			mutex_unlock(&priv->phydev->mdio.bus->mdio_lock);
 		return;
 	}
 
@@ -132,7 +132,7 @@ static void cvm_oct_rgmii_poll(struct net_device *dev)
 	if (use_global_register_lock)
 		spin_unlock_irqrestore(&global_register_lock, flags);
 	else
-		mutex_unlock(&priv->phydev->bus->mdio_lock);
+		mutex_unlock(&priv->phydev->mdio.bus->mdio_lock);
 
 	if (priv->phydev == NULL) {
 		/* Tell core. */
@@ -207,7 +207,7 @@ static irqreturn_t cvm_oct_rgmii_rml_interrupt(int cpl, void *dev_id)
 
 int cvm_oct_rgmii_open(struct net_device *dev)
 {
-	return cvm_oct_common_open(dev, cvm_oct_rgmii_poll, false);
+	return cvm_oct_common_open(dev, cvm_oct_rgmii_poll);
 }
 
 static void cvm_oct_rgmii_immediate_poll(struct work_struct *work)

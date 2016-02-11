@@ -39,6 +39,7 @@
  *    far_copies (stored in second byte of layout)
  *    far_offset (stored in bit 16 of layout )
  *    use_far_sets (stored in bit 17 of layout )
+ *    use_far_sets_bugfixed (stored in bit 18 of layout )
  *
  * The data to be stored is divided into chunks using chunksize.  Each device
  * is divided into far_copies sections.   In each section, chunks are laid out
@@ -1441,7 +1442,7 @@ retry_write:
 	one_write_done(r10_bio);
 }
 
-static void make_request(struct mddev *mddev, struct bio *bio)
+static void raid10_make_request(struct mddev *mddev, struct bio *bio)
 {
 	struct r10conf *conf = mddev->private;
 	sector_t chunk_mask = (conf->geo.chunk_mask & conf->prev.chunk_mask);
@@ -1483,7 +1484,7 @@ static void make_request(struct mddev *mddev, struct bio *bio)
 	wake_up(&conf->wait_barrier);
 }
 
-static void status(struct seq_file *seq, struct mddev *mddev)
+static void raid10_status(struct seq_file *seq, struct mddev *mddev)
 {
 	struct r10conf *conf = mddev->private;
 	int i;
@@ -1497,6 +1498,8 @@ static void status(struct seq_file *seq, struct mddev *mddev)
 			seq_printf(seq, " %d offset-copies", conf->geo.far_copies);
 		else
 			seq_printf(seq, " %d far-copies", conf->geo.far_copies);
+		if (conf->geo.far_set_size != conf->geo.raid_disks)
+			seq_printf(seq, " %d devices per set", conf->geo.far_set_size);
 	}
 	seq_printf(seq, " [%d/%d] [", conf->geo.raid_disks,
 					conf->geo.raid_disks - mddev->degraded);
@@ -1559,7 +1562,7 @@ static int enough(struct r10conf *conf, int ignore)
 		_enough(conf, 1, ignore);
 }
 
-static void error(struct mddev *mddev, struct md_rdev *rdev)
+static void raid10_error(struct mddev *mddev, struct md_rdev *rdev)
 {
 	char b[BDEVNAME_SIZE];
 	struct r10conf *conf = mddev->private;
@@ -1695,6 +1698,9 @@ static int raid10_add_disk(struct mddev *mddev, struct md_rdev *rdev)
 	if (rdev->saved_raid_disk < 0 && !_enough(conf, 1, -1))
 		return -EINVAL;
 
+	if (md_integrity_add_rdev(rdev, mddev))
+		return -ENXIO;
+
 	if (rdev->raid_disk >= 0)
 		first = last = rdev->raid_disk;
 
@@ -1736,7 +1742,6 @@ static int raid10_add_disk(struct mddev *mddev, struct md_rdev *rdev)
 		rcu_assign_pointer(p->rdev, rdev);
 		break;
 	}
-	md_integrity_add_rdev(rdev, mddev);
 	if (mddev->queue && blk_queue_discard(bdev_get_queue(rdev->bdev)))
 		queue_flag_set_unlocked(QUEUE_FLAG_DISCARD, mddev->queue);
 
@@ -1941,6 +1946,8 @@ static void sync_request_write(struct mddev *mddev, struct r10bio *r10_bio)
 
 	first = i;
 	fbio = r10_bio->devs[i].bio;
+	fbio->bi_iter.bi_size = r10_bio->sectors << 9;
+	fbio->bi_iter.bi_idx = 0;
 
 	vcnt = (r10_bio->sectors + (PAGE_SIZE >> 9) - 1) >> (PAGE_SHIFT - 9);
 	/* now find blocks with errors */
@@ -1984,7 +1991,7 @@ static void sync_request_write(struct mddev *mddev, struct r10bio *r10_bio)
 		bio_reset(tbio);
 
 		tbio->bi_vcnt = vcnt;
-		tbio->bi_iter.bi_size = r10_bio->sectors << 9;
+		tbio->bi_iter.bi_size = fbio->bi_iter.bi_size;
 		tbio->bi_rw = WRITE;
 		tbio->bi_private = r10_bio;
 		tbio->bi_iter.bi_sector = r10_bio->devs[i].addr;
@@ -2467,7 +2474,7 @@ static int narrow_write_error(struct r10bio *r10_bio, int i)
 				   choose_data_offset(r10_bio, rdev) +
 				   (sector - r10_bio->sector));
 		wbio->bi_bdev = rdev->bdev;
-		if (submit_bio_wait(WRITE, wbio) == 0)
+		if (submit_bio_wait(WRITE, wbio) < 0)
 			/* Failure! */
 			ok = rdev_set_badblocks(rdev, sector,
 						sectors, 0)
@@ -2654,16 +2661,17 @@ static void handle_write_completed(struct r10conf *conf, struct r10bio *r10_bio)
 				rdev_dec_pending(rdev, conf->mddev);
 			}
 		}
-		if (test_bit(R10BIO_WriteError,
-			     &r10_bio->state))
-			close_write(r10_bio);
 		if (fail) {
 			spin_lock_irq(&conf->device_lock);
 			list_add(&r10_bio->retry_list, &conf->bio_end_io_list);
 			spin_unlock_irq(&conf->device_lock);
 			md_wakeup_thread(conf->mddev->thread);
-		} else
+		} else {
+			if (test_bit(R10BIO_WriteError,
+				     &r10_bio->state))
+				close_write(r10_bio);
 			raid_end_bio_io(r10_bio);
+		}
 	}
 }
 
@@ -2691,6 +2699,12 @@ static void raid10d(struct md_thread *thread)
 			r10_bio = list_first_entry(&tmp, struct r10bio,
 						   retry_list);
 			list_del(&r10_bio->retry_list);
+			if (mddev->degraded)
+				set_bit(R10BIO_Degraded, &r10_bio->state);
+
+			if (test_bit(R10BIO_WriteError,
+				     &r10_bio->state))
+				close_write(r10_bio);
 			raid_end_bio_io(r10_bio);
 		}
 	}
@@ -2788,7 +2802,7 @@ static int init_resync(struct r10conf *conf)
  *
  */
 
-static sector_t sync_request(struct mddev *mddev, sector_t sector_nr,
+static sector_t raid10_sync_request(struct mddev *mddev, sector_t sector_nr,
 			     int *skipped)
 {
 	struct r10conf *conf = mddev->private;
@@ -3137,7 +3151,7 @@ static sector_t sync_request(struct mddev *mddev, sector_t sector_nr,
 		/* resync. Schedule a read for every block at this virt offset */
 		int count = 0;
 
-		bitmap_cond_end_sync(mddev->bitmap, sector_nr);
+		bitmap_cond_end_sync(mddev->bitmap, sector_nr, 0);
 
 		if (!bitmap_start_sync(mddev->bitmap, sector_nr,
 				       &sync_blocks, mddev->degraded) &&
@@ -3387,7 +3401,7 @@ static int setup_geo(struct geom *geo, struct mddev *mddev, enum geo_type new)
 		disks = mddev->raid_disks + mddev->delta_disks;
 		break;
 	}
-	if (layout >> 18)
+	if (layout >> 19)
 		return -1;
 	if (chunk < (PAGE_SIZE >> 9) ||
 	    !is_power_of_2(chunk))
@@ -3399,7 +3413,22 @@ static int setup_geo(struct geom *geo, struct mddev *mddev, enum geo_type new)
 	geo->near_copies = nc;
 	geo->far_copies = fc;
 	geo->far_offset = fo;
-	geo->far_set_size = (layout & (1<<17)) ? disks / fc : disks;
+	switch (layout >> 17) {
+	case 0:	/* original layout.  simple but not always optimal */
+		geo->far_set_size = disks;
+		break;
+	case 1: /* "improved" layout which was buggy.  Hopefully no-one is
+		 * actually using this, but leave code here just in case.*/
+		geo->far_set_size = disks/fc;
+		WARN(geo->far_set_size < fc,
+		     "This RAID10 layout does not provide data safety - please backup and create new array\n");
+		break;
+	case 2: /* "improved" layout fixed to match documentation */
+		geo->far_set_size = fc * nc;
+		break;
+	default: /* Not a valid layout */
+		return -1;
+	}
 	geo->chunk_mask = chunk - 1;
 	geo->chunk_shift = ffz(~chunk);
 	return nc*fc;
@@ -3494,7 +3523,7 @@ static struct r10conf *setup_conf(struct mddev *mddev)
 	return ERR_PTR(err);
 }
 
-static int run(struct mddev *mddev)
+static int raid10_run(struct mddev *mddev)
 {
 	struct r10conf *conf;
 	int i, disk_idx, chunk_size;
@@ -4588,15 +4617,15 @@ static struct md_personality raid10_personality =
 	.name		= "raid10",
 	.level		= 10,
 	.owner		= THIS_MODULE,
-	.make_request	= make_request,
-	.run		= run,
+	.make_request	= raid10_make_request,
+	.run		= raid10_run,
 	.free		= raid10_free,
-	.status		= status,
-	.error_handler	= error,
+	.status		= raid10_status,
+	.error_handler	= raid10_error,
 	.hot_add_disk	= raid10_add_disk,
 	.hot_remove_disk= raid10_remove_disk,
 	.spare_active	= raid10_spare_active,
-	.sync_request	= sync_request,
+	.sync_request	= raid10_sync_request,
 	.quiesce	= raid10_quiesce,
 	.size		= raid10_size,
 	.resize		= raid10_resize,

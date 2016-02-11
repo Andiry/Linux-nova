@@ -47,13 +47,13 @@
 	compatible = "renesas,lager", "renesas,r8a7790";
 
 	aliases {
-		serial0 = &scifa0;
+		serial0 = &scif0;
 		serial1 = &scifa1;
 	};
 
 	chosen {
 		bootargs = "ignore_loglevel rw root=/dev/nfs ip=dhcp";
-		stdout-path = &scifa0;
+		stdout-path = "serial0:115200n8";
 	};
 
 	memory@40000000 {
@@ -77,28 +77,28 @@
 		button@1 {
 			linux,code = <KEY_1>;
 			label = "SW2-1";
-			gpio-key,wakeup;
+			wakeup-source;
 			debounce-interval = <20>;
 			gpios = <&gpio1 14 GPIO_ACTIVE_LOW>;
 		};
 		button@2 {
 			linux,code = <KEY_2>;
 			label = "SW2-2";
-			gpio-key,wakeup;
+			wakeup-source;
 			debounce-interval = <20>;
 			gpios = <&gpio1 24 GPIO_ACTIVE_LOW>;
 		};
 		button@3 {
 			linux,code = <KEY_3>;
 			label = "SW2-3";
-			gpio-key,wakeup;
+			wakeup-source;
 			debounce-interval = <20>;
 			gpios = <&gpio1 26 GPIO_ACTIVE_LOW>;
 		};
 		button@4 {
 			linux,code = <KEY_4>;
 			label = "SW2-4";
-			gpio-key,wakeup;
+			wakeup-source;
 			debounce-interval = <20>;
 			gpios = <&gpio1 28 GPIO_ACTIVE_LOW>;
 		};
@@ -174,6 +174,13 @@
 			  1800000 0>;
 	};
 
+	audio_clock: clock {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <11289600>;
+		clock-output-names = "audio_clock";
+	};
+
 	rsnd_ak4643: sound {
 		compatible = "simple-audio-card";
 
@@ -187,7 +194,7 @@
 
 		sndcodec: simple-audio-card,codec {
 			sound-dai = <&ak4643>;
-			system-clock-frequency = <11289600>;
+			clocks = <&audio_clock>;
 		};
 	};
 
@@ -289,9 +296,9 @@
 		renesas,function = "du";
 	};
 
-	scifa0_pins: serial0 {
-		renesas,groups = "scifa0_data";
-		renesas,function = "scifa0";
+	scif0_pins: serial0 {
+		renesas,groups = "scif0_data";
+		renesas,function = "scif0";
 	};
 
 	ether_pins: ether {
@@ -333,6 +340,11 @@
 		renesas,groups = "msiof1_clk", "msiof1_sync", "msiof1_rx",
 				 "msiof1_tx";
 		renesas,function = "msiof1";
+	};
+
+	iic0_pins: iic0 {
+		renesas,groups = "iic0";
+		renesas,function = "iic0";
 	};
 
 	iic1_pins: iic1 {
@@ -427,8 +439,6 @@
 	status = "okay";
 
 	flash: flash@0 {
-		#address-cells = <1>;
-		#size-cells = <1>;
 		compatible = "spansion,s25fl512s", "jedec,spi-nor";
 		reg = <0>;
 		spi-max-frequency = <30000000>;
@@ -438,25 +448,31 @@
 		spi-cpol;
 		m25p,fast-read;
 
-		partition@0 {
-			label = "loader";
-			reg = <0x00000000 0x00040000>;
-			read-only;
-		};
-		partition@40000 {
-			label = "user";
-			reg = <0x00040000 0x00400000>;
-			read-only;
-		};
-		partition@440000 {
-			label = "flash";
-			reg = <0x00440000 0x03bc0000>;
+		partitions {
+			compatible = "fixed-partitions";
+			#address-cells = <1>;
+			#size-cells = <1>;
+
+			partition@0 {
+				label = "loader";
+				reg = <0x00000000 0x00040000>;
+				read-only;
+			};
+			partition@40000 {
+				label = "user";
+				reg = <0x00040000 0x00400000>;
+				read-only;
+			};
+			partition@440000 {
+				label = "flash";
+				reg = <0x00440000 0x03bc0000>;
+			};
 		};
 	};
 };
 
-&scifa0 {
-	pinctrl-0 = <&scifa0_pins>;
+&scif0 {
+	pinctrl-0 = <&scif0_pins>;
 	pinctrl-names = "default";
 
 	status = "okay";
@@ -510,6 +526,8 @@
 
 &iic0	{
 	status = "okay";
+	pinctrl-0 = <&iic0_pins>;
+	pinctrl-names = "default";
 };
 
 &iic1	{

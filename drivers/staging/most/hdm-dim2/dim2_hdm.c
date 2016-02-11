@@ -37,7 +37,7 @@
 #define MAX_BUFFERS_PACKET      32
 #define MAX_BUFFERS_STREAMING   32
 #define MAX_BUF_SIZE_PACKET     2048
-#define MAX_BUF_SIZE_STREAMING  (8*1024)
+#define MAX_BUF_SIZE_STREAMING  (8 * 1024)
 
 /* command line parameter to select clock speed */
 static char *clock_speed;
@@ -73,8 +73,8 @@ struct hdm_channel {
 	char name[sizeof "caNNN"];
 	bool is_initialized;
 	struct dim_channel ch;
-	struct list_head pending_list;	/* before DIM_EnqueueBuffer() */
-	struct list_head started_list;	/* after DIM_EnqueueBuffer() */
+	struct list_head pending_list;	/* before dim_enqueue_buffer() */
+	struct list_head started_list;	/* after dim_enqueue_buffer() */
 	enum most_channel_direction direction;
 	enum most_channel_data_type data_type;
 };
@@ -128,51 +128,41 @@ bool dim2_sysfs_get_state_cb(void)
 	unsigned long flags;
 
 	spin_lock_irqsave(&dim_lock, flags);
-	state = DIM_GetLockState();
+	state = dim_get_lock_state();
 	spin_unlock_irqrestore(&dim_lock, flags);
 
 	return state;
 }
 
 /**
- * DIMCB_IoRead - callback from HAL to read an I/O register
+ * dimcb_io_read - callback from HAL to read an I/O register
  * @ptr32: register address
  */
-u32 DIMCB_IoRead(u32 *ptr32)
+u32 dimcb_io_read(u32 *ptr32)
 {
 	return __raw_readl(ptr32);
 }
 
 /**
- * DIMCB_IoWrite - callback from HAL to write value to an I/O register
+ * dimcb_io_write - callback from HAL to write value to an I/O register
  * @ptr32: register address
  * @value: value to write
  */
-void DIMCB_IoWrite(u32 *ptr32, u32 value)
+void dimcb_io_write(u32 *ptr32, u32 value)
 {
 	__raw_writel(value, ptr32);
 }
 
 /**
- * DIMCB_OnError - callback from HAL to report miscommunication between
+ * dimcb_on_error - callback from HAL to report miscommunication between
  * HDM and HAL
  * @error_id: Error ID
  * @error_message: Error message. Some text in a free format
  */
-void DIMCB_OnError(u8 error_id, const char *error_message)
+void dimcb_on_error(u8 error_id, const char *error_message)
 {
-	pr_err("DIMCB_OnError: error_id - %d, error_message - %s\n", error_id,
+	pr_err("dimcb_on_error: error_id - %d, error_message - %s\n", error_id,
 	       error_message);
-}
-
-/**
- * DIMCB_OnFail - callback from HAL to report unrecoverable errors
- * @filename: Source file where the error happened
- * @linenum: Line number of the file where the error happened
- */
-void DIMCB_OnFail(const char *filename, int linenum)
-{
-	pr_err("DIMCB_OnFail: file - %s, line no. - %d\n", filename, linenum);
 }
 
 /**
@@ -210,12 +200,11 @@ static int startup_dim(struct platform_device *pdev)
 	}
 
 	if (dev->clk_speed == -1) {
-		pr_info("Bad or missing clock speed parameter,"
-			" using default value: 3072fs\n");
+		pr_info("Bad or missing clock speed parameter, using default value: 3072fs\n");
 		dev->clk_speed = CLK_3072FS;
-	} else
+	} else {
 		pr_info("Selected clock speed: %s\n", clock_speed);
-
+	}
 	if (pdata && pdata->init) {
 		int ret = pdata->init(pdata, dev->io_base, dev->clk_speed);
 
@@ -223,9 +212,9 @@ static int startup_dim(struct platform_device *pdev)
 			return ret;
 	}
 
-	hal_ret = DIM_Startup(dev->io_base, dev->clk_speed);
+	hal_ret = dim_startup(dev->io_base, dev->clk_speed);
 	if (hal_ret != DIM_NO_ERROR) {
-		pr_err("DIM_Startup failed: %d\n", hal_ret);
+		pr_err("dim_startup failed: %d\n", hal_ret);
 		if (pdata && pdata->destroy)
 			pdata->destroy(pdata);
 		return -ENODEV;
@@ -248,7 +237,7 @@ static int try_start_dim_transfer(struct hdm_channel *hdm_ch)
 	unsigned long flags;
 	struct dim_ch_state_t st;
 
-	BUG_ON(hdm_ch == 0);
+	BUG_ON(!hdm_ch);
 	BUG_ON(!hdm_ch->is_initialized);
 
 	spin_lock_irqsave(&dim_lock, flags);
@@ -257,7 +246,7 @@ static int try_start_dim_transfer(struct hdm_channel *hdm_ch)
 		return -EAGAIN;
 	}
 
-	if (!DIM_GetChannelState(&hdm_ch->ch, &st)->ready) {
+	if (!dim_get_channel_state(&hdm_ch->ch, &st)->ready) {
 		spin_unlock_irqrestore(&dim_lock, flags);
 		return -EAGAIN;
 	}
@@ -266,7 +255,7 @@ static int try_start_dim_transfer(struct hdm_channel *hdm_ch)
 	buf_size = mbo->buffer_length;
 
 	BUG_ON(mbo->bus_address == 0);
-	if (!DIM_EnqueueBuffer(&hdm_ch->ch, mbo->bus_address, buf_size)) {
+	if (!dim_enqueue_buffer(&hdm_ch->ch, mbo->bus_address, buf_size)) {
 		list_del(head->next);
 		spin_unlock_irqrestore(&dim_lock, flags);
 		mbo->processed_length = 0;
@@ -289,7 +278,7 @@ static int try_start_dim_transfer(struct hdm_channel *hdm_ch)
  */
 static int deliver_netinfo_thread(void *data)
 {
-	struct dim2_hdm *dev = (struct dim2_hdm *)data;
+	struct dim2_hdm *dev = data;
 
 	while (!kthread_should_stop()) {
 		wait_event_interruptible(dev->netinfo_waitq,
@@ -346,18 +335,18 @@ static void service_done_flag(struct dim2_hdm *dev, int ch_idx)
 	unsigned long flags;
 	u8 *data;
 
-	BUG_ON(hdm_ch == 0);
+	BUG_ON(!hdm_ch);
 	BUG_ON(!hdm_ch->is_initialized);
 
 	spin_lock_irqsave(&dim_lock, flags);
 
-	done_buffers = DIM_GetChannelState(&hdm_ch->ch, &st)->done_buffers;
+	done_buffers = dim_get_channel_state(&hdm_ch->ch, &st)->done_buffers;
 	if (!done_buffers) {
 		spin_unlock_irqrestore(&dim_lock, flags);
 		return;
 	}
 
-	if (!DIM_DetachBuffers(&hdm_ch->ch, done_buffers)) {
+	if (!dim_detach_buffers(&hdm_ch->ch, done_buffers)) {
 		spin_unlock_irqrestore(&dim_lock, flags);
 		return;
 	}
@@ -369,8 +358,7 @@ static void service_done_flag(struct dim2_hdm *dev, int ch_idx)
 		spin_lock_irqsave(&dim_lock, flags);
 		if (list_empty(head)) {
 			spin_unlock_irqrestore(&dim_lock, flags);
-			pr_crit("hard error: started_mbo list is empty "
-				"whereas DIM2 has sent buffers\n");
+			pr_crit("hard error: started_mbo list is empty whereas DIM2 has sent buffers\n");
 			break;
 		}
 
@@ -383,7 +371,6 @@ static void service_done_flag(struct dim2_hdm *dev, int ch_idx)
 		if (hdm_ch->data_type == MOST_CH_ASYNC &&
 		    hdm_ch->direction == MOST_CH_RX &&
 		    PACKET_IS_NET_INFO(data)) {
-
 			retrieve_netinfo(dev, mbo);
 
 			spin_lock_irqsave(&dim_lock, flags);
@@ -392,12 +379,12 @@ static void service_done_flag(struct dim2_hdm *dev, int ch_idx)
 		} else {
 			if (hdm_ch->data_type == MOST_CH_CONTROL ||
 			    hdm_ch->data_type == MOST_CH_ASYNC) {
-
 				u32 const data_size =
 					(u32)data[0] * 256 + data[1] + 2;
 
 				mbo->processed_length =
-					min(data_size, (u32)mbo->buffer_length);
+					min_t(u32, data_size,
+					      mbo->buffer_length);
 			} else {
 				mbo->processed_length = mbo->buffer_length;
 			}
@@ -410,7 +397,7 @@ static void service_done_flag(struct dim2_hdm *dev, int ch_idx)
 }
 
 static struct dim_channel **get_active_channels(struct dim2_hdm *dev,
-		struct dim_channel **buffer)
+						struct dim_channel **buffer)
 {
 	int idx = 0;
 	int ch_idx;
@@ -419,7 +406,7 @@ static struct dim_channel **get_active_channels(struct dim2_hdm *dev,
 		if (dev->hch[ch_idx].is_initialized)
 			buffer[idx++] = &dev->hch[ch_idx].ch;
 	}
-	buffer[idx++] = 0;
+	buffer[idx++] = NULL;
 
 	return buffer;
 }
@@ -441,7 +428,7 @@ static void dim2_tasklet_fn(unsigned long data)
 			continue;
 
 		spin_lock_irqsave(&dim_lock, flags);
-		DIM_ServiceChannel(&(dev->hch[ch_idx].ch));
+		dim_service_channel(&dev->hch[ch_idx].ch);
 		spin_unlock_irqrestore(&dim_lock, flags);
 
 		service_done_flag(dev, ch_idx);
@@ -460,12 +447,12 @@ static void dim2_tasklet_fn(unsigned long data)
  */
 static irqreturn_t dim2_ahb_isr(int irq, void *_dev)
 {
-	struct dim2_hdm *dev = (struct dim2_hdm *)_dev;
+	struct dim2_hdm *dev = _dev;
 	struct dim_channel *buffer[DMA_CHANNELS + 1];
 	unsigned long flags;
 
 	spin_lock_irqsave(&dim_lock, flags);
-	DIM_ServiceIrq(get_active_channels(dev, buffer));
+	dim_service_irq(get_active_channels(dev, buffer));
 	spin_unlock_irqrestore(&dim_lock, flags);
 
 #if !defined(ENABLE_HDM_TEST)
@@ -547,7 +534,7 @@ static int configure_channel(struct most_interface *most_iface, int ch_idx,
 
 	switch (ccfg->data_type) {
 	case MOST_CH_CONTROL:
-		new_size = DIM_NormCtrlAsyncBufferSize(buf_size);
+		new_size = dim_norm_ctrl_async_buffer_size(buf_size);
 		if (new_size == 0) {
 			pr_err("%s: too small buffer size\n", hdm_ch->name);
 			return -EINVAL;
@@ -557,10 +544,11 @@ static int configure_channel(struct most_interface *most_iface, int ch_idx,
 			pr_warn("%s: fixed buffer size (%d -> %d)\n",
 				hdm_ch->name, buf_size, new_size);
 		spin_lock_irqsave(&dim_lock, flags);
-		hal_ret = DIM_InitControl(&hdm_ch->ch, is_tx, ch_addr, buf_size);
+		hal_ret = dim_init_control(&hdm_ch->ch, is_tx, ch_addr,
+					   buf_size);
 		break;
 	case MOST_CH_ASYNC:
-		new_size = DIM_NormCtrlAsyncBufferSize(buf_size);
+		new_size = dim_norm_ctrl_async_buffer_size(buf_size);
 		if (new_size == 0) {
 			pr_err("%s: too small buffer size\n", hdm_ch->name);
 			return -EINVAL;
@@ -570,13 +558,13 @@ static int configure_channel(struct most_interface *most_iface, int ch_idx,
 			pr_warn("%s: fixed buffer size (%d -> %d)\n",
 				hdm_ch->name, buf_size, new_size);
 		spin_lock_irqsave(&dim_lock, flags);
-		hal_ret = DIM_InitAsync(&hdm_ch->ch, is_tx, ch_addr, buf_size);
+		hal_ret = dim_init_async(&hdm_ch->ch, is_tx, ch_addr, buf_size);
 		break;
 	case MOST_CH_ISOC_AVP:
-		new_size = DIM_NormIsocBufferSize(buf_size, sub_size);
+		new_size = dim_norm_isoc_buffer_size(buf_size, sub_size);
 		if (new_size == 0) {
-			pr_err("%s: invalid sub-buffer size or "
-			       "too small buffer size\n", hdm_ch->name);
+			pr_err("%s: invalid sub-buffer size or too small buffer size\n",
+			       hdm_ch->name);
 			return -EINVAL;
 		}
 		ccfg->buffer_size = new_size;
@@ -584,13 +572,13 @@ static int configure_channel(struct most_interface *most_iface, int ch_idx,
 			pr_warn("%s: fixed buffer size (%d -> %d)\n",
 				hdm_ch->name, buf_size, new_size);
 		spin_lock_irqsave(&dim_lock, flags);
-		hal_ret = DIM_InitIsoc(&hdm_ch->ch, is_tx, ch_addr, sub_size);
+		hal_ret = dim_init_isoc(&hdm_ch->ch, is_tx, ch_addr, sub_size);
 		break;
 	case MOST_CH_SYNC:
-		new_size = DIM_NormSyncBufferSize(buf_size, sub_size);
+		new_size = dim_norm_sync_buffer_size(buf_size, sub_size);
 		if (new_size == 0) {
-			pr_err("%s: invalid sub-buffer size or "
-			       "too small buffer size\n", hdm_ch->name);
+			pr_err("%s: invalid sub-buffer size or too small buffer size\n",
+			       hdm_ch->name);
 			return -EINVAL;
 		}
 		ccfg->buffer_size = new_size;
@@ -598,7 +586,7 @@ static int configure_channel(struct most_interface *most_iface, int ch_idx,
 			pr_warn("%s: fixed buffer size (%d -> %d)\n",
 				hdm_ch->name, buf_size, new_size);
 		spin_lock_irqsave(&dim_lock, flags);
-		hal_ret = DIM_InitSync(&hdm_ch->ch, is_tx, ch_addr, sub_size);
+		hal_ret = dim_init_sync(&hdm_ch->ch, is_tx, ch_addr, sub_size);
 		break;
 	default:
 		pr_err("%s: configure failed, bad channel type: %d\n",
@@ -679,7 +667,7 @@ static void request_netinfo(struct most_interface *most_iface, int ch_idx)
 		return;
 	}
 
-	mbo = most_get_mbo(&dev->most_iface, dev->atx_idx);
+	mbo = most_get_mbo(&dev->most_iface, dev->atx_idx, NULL);
 	if (!mbo)
 		return;
 
@@ -718,7 +706,7 @@ static int poison_channel(struct most_interface *most_iface, int ch_idx)
 		return -EPERM;
 
 	spin_lock_irqsave(&dim_lock, flags);
-	hal_ret = DIM_DestroyChannel(&hdm_ch->ch);
+	hal_ret = dim_destroy_channel(&hdm_ch->ch);
 	hdm_ch->is_initialized = false;
 	if (ch_idx == dev->atx_idx)
 		dev->atx_idx = -1;
@@ -787,7 +775,8 @@ static int dim2_probe(struct platform_device *pdev)
 
 	ret = request_irq(dev->irq_ahb0, dim2_ahb_isr, 0, "mlb_ahb0", dev);
 	if (ret) {
-		pr_err("failed to request IRQ: %d, err: %d\n", dev->irq_ahb0, ret);
+		pr_err("failed to request IRQ: %d, err: %d\n",
+		       dev->irq_ahb0, ret);
 		goto err_unmap_io;
 	}
 #endif
@@ -894,7 +883,7 @@ static int dim2_remove(struct platform_device *pdev)
 	unsigned long flags;
 
 	spin_lock_irqsave(&dim_lock, flags);
-	DIM_Shutdown();
+	dim_shutdown();
 	spin_unlock_irqrestore(&dim_lock, flags);
 
 	if (pdata && pdata->destroy)
@@ -915,7 +904,7 @@ static int dim2_remove(struct platform_device *pdev)
 	 * break link to local platform_device_id struct
 	 * to prevent crash by unload platform device module
 	 */
-	pdev->id_entry = 0;
+	pdev->id_entry = NULL;
 
 	return 0;
 }
@@ -933,30 +922,10 @@ static struct platform_driver dim2_driver = {
 	.id_table = dim2_id,
 	.driver = {
 		.name = "hdm_dim2",
-		.owner = THIS_MODULE,
 	},
 };
 
-/**
- * dim2_hdm_init - Driver Registration Routine
- */
-static int __init dim2_hdm_init(void)
-{
-	pr_info("dim2_hdm_init()\n");
-	return platform_driver_register(&dim2_driver);
-}
-
-/**
- * dim2_hdm_exit - Driver Cleanup Routine
- **/
-static void __exit dim2_hdm_exit(void)
-{
-	pr_info("dim2_hdm_exit()\n");
-	platform_driver_unregister(&dim2_driver);
-}
-
-module_init(dim2_hdm_init);
-module_exit(dim2_hdm_exit);
+module_platform_driver(dim2_driver);
 
 MODULE_AUTHOR("Jain Roy Ambi <JainRoy.Ambi@microchip.com>");
 MODULE_AUTHOR("Andrey Shvetsov <andrey.shvetsov@k2l.de>");

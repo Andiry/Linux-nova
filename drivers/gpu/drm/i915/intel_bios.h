@@ -28,8 +28,6 @@
 #ifndef _I830_BIOS_H_
 #define _I830_BIOS_H_
 
-#include <drm/drmP.h>
-
 struct vbt_header {
 	u8 signature[20];		/**< Always starts with 'VBT$' */
 	u16 version;			/**< decimal */
@@ -588,9 +586,6 @@ struct bdb_psr {
 	struct psr_table psr_table[16];
 } __packed;
 
-void intel_setup_bios(struct drm_device *dev);
-int intel_parse_bios(struct drm_device *dev);
-
 /*
  * Driver<->VBIOS interaction occurs through scratch bits in
  * GR18 & SWF*.
@@ -742,7 +737,6 @@ int intel_parse_bios(struct drm_device *dev);
  */
 #define DEVICE_TYPE_eDP_BITS \
 	(DEVICE_TYPE_INTERNAL_CONNECTOR | \
-	 DEVICE_TYPE_NOT_HDMI_OUTPUT | \
 	 DEVICE_TYPE_MIPI_OUTPUT | \
 	 DEVICE_TYPE_COMPOSITE_OUTPUT | \
 	 DEVICE_TYPE_DUAL_CHANNEL | \
@@ -750,7 +744,6 @@ int intel_parse_bios(struct drm_device *dev);
 	 DEVICE_TYPE_TMDS_DVI_SIGNALING | \
 	 DEVICE_TYPE_VIDEO_SIGNALING | \
 	 DEVICE_TYPE_DISPLAYPORT_OUTPUT | \
-	 DEVICE_TYPE_DIGITAL_OUTPUT | \
 	 DEVICE_TYPE_ANALOG_OUTPUT)
 
 /* define the DVO port for HDMI output type */

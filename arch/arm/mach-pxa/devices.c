@@ -6,7 +6,7 @@
 #include <linux/spi/pxa2xx_spi.h>
 #include <linux/i2c/pxa-i2c.h>
 
-#include <mach/udc.h>
+#include "udc.h"
 #include <linux/platform_data/usb-pxa3xx-ulpi.h>
 #include <linux/platform_data/video-pxafb.h>
 #include <linux/platform_data/mmc-pxamci.h>
@@ -14,7 +14,7 @@
 #include <mach/irqs.h>
 #include <linux/platform_data/usb-ohci-pxa27x.h>
 #include <linux/platform_data/keypad-pxa27x.h>
-#include <linux/platform_data/camera-pxa.h>
+#include <linux/platform_data/media/camera-pxa.h>
 #include <mach/audio.h>
 #include <mach/hardware.h>
 #include <linux/platform_data/mmp_dma.h>
@@ -394,6 +394,26 @@ static struct resource pxa_ir_resources[] = {
 		.start  = IRQ_ICP,
 		.end    = IRQ_ICP,
 		.flags  = IORESOURCE_IRQ,
+	},
+	[3] = {
+		.start  = 0x40800000,
+		.end	= 0x4080001b,
+		.flags  = IORESOURCE_MEM,
+	},
+	[4] = {
+		.start  = 0x40700000,
+		.end	= 0x40700023,
+		.flags  = IORESOURCE_MEM,
+	},
+	[5] = {
+		.start  = 17,
+		.end	= 17,
+		.flags  = IORESOURCE_DMA,
+	},
+	[6] = {
+		.start  = 18,
+		.end	= 18,
+		.flags  = IORESOURCE_DMA,
 	},
 };
 

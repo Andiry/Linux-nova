@@ -91,8 +91,7 @@ static bool ovs_must_notify(struct genl_family *family, struct genl_info *info,
 static void ovs_notify(struct genl_family *family,
 		       struct sk_buff *skb, struct genl_info *info)
 {
-	genl_notify(family, skb, genl_info_net(info), info->snd_portid,
-		    0, info->nlhdr, GFP_KERNEL);
+	genl_notify(family, skb, info, 0, GFP_KERNEL);
 }
 
 /**
@@ -337,12 +336,10 @@ static int queue_gso_packets(struct datapath *dp, struct sk_buff *skb,
 	unsigned short gso_type = skb_shinfo(skb)->gso_type;
 	struct sw_flow_key later_key;
 	struct sk_buff *segs, *nskb;
-	struct ovs_skb_cb ovs_cb;
 	int err;
 
-	ovs_cb = *OVS_CB(skb);
+	BUILD_BUG_ON(sizeof(*OVS_CB(skb)) > SKB_SGO_CB_OFFSET);
 	segs = __skb_gso_segment(skb, NETIF_F_SG, false);
-	*OVS_CB(skb) = ovs_cb;
 	if (IS_ERR(segs))
 		return PTR_ERR(segs);
 	if (segs == NULL)
@@ -360,7 +357,6 @@ static int queue_gso_packets(struct datapath *dp, struct sk_buff *skb,
 	/* Queue all of the segments. */
 	skb = segs;
 	do {
-		*OVS_CB(skb) = ovs_cb;
 		if (gso_type & SKB_GSO_UDP && skb != segs)
 			key = &later_key;
 
@@ -490,9 +486,8 @@ static int queue_userspace_packet(struct datapath *dp, struct sk_buff *skb,
 
 	if (upcall_info->egress_tun_info) {
 		nla = nla_nest_start(user_skb, OVS_PACKET_ATTR_EGRESS_TUN_KEY);
-		err = ovs_nla_put_egress_tunnel_key(user_skb,
-						    upcall_info->egress_tun_info,
-						    upcall_info->egress_tun_opts);
+		err = ovs_nla_put_tunnel_info(user_skb,
+					      upcall_info->egress_tun_info);
 		BUG_ON(err);
 		nla_nest_end(user_skb, nla);
 	}
@@ -1177,7 +1172,7 @@ static int ovs_flow_cmd_set(struct sk_buff *skb, struct genl_info *info)
 						info, OVS_FLOW_CMD_NEW, false,
 						ufid_flags);
 
-		if (unlikely(IS_ERR(reply))) {
+		if (IS_ERR(reply)) {
 			error = PTR_ERR(reply);
 			goto err_unlock_ovs;
 		}

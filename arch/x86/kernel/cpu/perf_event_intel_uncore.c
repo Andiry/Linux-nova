@@ -7,7 +7,8 @@ struct intel_uncore_type **uncore_pci_uncores = empty_uncore;
 static bool pcidrv_registered;
 struct pci_driver *uncore_pci_driver;
 /* pci bus to socket mapping */
-int uncore_pcibus_to_physid[256] = { [0 ... 255] = -1, };
+DEFINE_RAW_SPINLOCK(pci2phy_map_lock);
+struct list_head pci2phy_map_head = LIST_HEAD_INIT(pci2phy_map_head);
 struct pci_dev *uncore_extra_pci_dev[UNCORE_SOCKET_MAX][UNCORE_EXTRA_PCI_DEV_MAX];
 
 static DEFINE_RAW_SPINLOCK(uncore_box_lock);
@@ -19,6 +20,59 @@ static struct event_constraint uncore_constraint_fixed =
 	EVENT_CONSTRAINT(~0ULL, 1 << UNCORE_PMC_IDX_FIXED, ~0ULL);
 struct event_constraint uncore_constraint_empty =
 	EVENT_CONSTRAINT(0, 0, 0);
+
+int uncore_pcibus_to_physid(struct pci_bus *bus)
+{
+	struct pci2phy_map *map;
+	int phys_id = -1;
+
+	raw_spin_lock(&pci2phy_map_lock);
+	list_for_each_entry(map, &pci2phy_map_head, list) {
+		if (map->segment == pci_domain_nr(bus)) {
+			phys_id = map->pbus_to_physid[bus->number];
+			break;
+		}
+	}
+	raw_spin_unlock(&pci2phy_map_lock);
+
+	return phys_id;
+}
+
+struct pci2phy_map *__find_pci2phy_map(int segment)
+{
+	struct pci2phy_map *map, *alloc = NULL;
+	int i;
+
+	lockdep_assert_held(&pci2phy_map_lock);
+
+lookup:
+	list_for_each_entry(map, &pci2phy_map_head, list) {
+		if (map->segment == segment)
+			goto end;
+	}
+
+	if (!alloc) {
+		raw_spin_unlock(&pci2phy_map_lock);
+		alloc = kmalloc(sizeof(struct pci2phy_map), GFP_KERNEL);
+		raw_spin_lock(&pci2phy_map_lock);
+
+		if (!alloc)
+			return NULL;
+
+		goto lookup;
+	}
+
+	map = alloc;
+	alloc = NULL;
+	map->segment = segment;
+	for (i = 0; i < 256; i++)
+		map->pbus_to_physid[i] = -1;
+	list_add_tail(&map->list, &pci2phy_map_head);
+
+end:
+	kfree(alloc);
+	return map;
+}
 
 ssize_t uncore_event_show(struct kobject *kobj,
 			  struct kobj_attribute *attr, char *buf)
@@ -809,7 +863,7 @@ static int uncore_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id
 	int phys_id;
 	bool first_box = false;
 
-	phys_id = uncore_pcibus_to_physid[pdev->bus->number];
+	phys_id = uncore_pcibus_to_physid(pdev->bus);
 	if (phys_id < 0)
 		return -ENODEV;
 
@@ -830,6 +884,15 @@ static int uncore_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id
 	 * each box has a different function id.
 	 */
 	pmu = &type->pmus[UNCORE_PCI_DEV_IDX(id->driver_data)];
+	/* Knights Landing uses a common PCI device ID for multiple instances of
+	 * an uncore PMU device type. There is only one entry per device type in
+	 * the knl_uncore_pci_ids table inspite of multiple devices present for
+	 * some device types. Hence PCI device idx would be 0 for all devices.
+	 * So increment pmu pointer to point to an unused array element.
+	 */
+	if (boot_cpu_data.x86_model == 87)
+		while (pmu->func_id >= 0)
+			pmu++;
 	if (pmu->func_id < 0)
 		pmu->func_id = pdev->devfn;
 	else
@@ -856,9 +919,10 @@ static void uncore_pci_remove(struct pci_dev *pdev)
 {
 	struct intel_uncore_box *box = pci_get_drvdata(pdev);
 	struct intel_uncore_pmu *pmu;
-	int i, cpu, phys_id = uncore_pcibus_to_physid[pdev->bus->number];
+	int i, cpu, phys_id;
 	bool last_box = false;
 
+	phys_id = uncore_pcibus_to_physid(pdev->bus);
 	box = pci_get_drvdata(pdev);
 	if (!box) {
 		for (i = 0; i < UNCORE_EXTRA_PCI_DEV_MAX; i++) {
@@ -911,6 +975,7 @@ static int __init uncore_pci_init(void)
 	case 63: /* Haswell-EP */
 		ret = hswep_uncore_pci_init();
 		break;
+	case 79: /* BDX-EP */
 	case 86: /* BDX-DE */
 		ret = bdx_uncore_pci_init();
 		break;
@@ -926,6 +991,12 @@ static int __init uncore_pci_init(void)
 		break;
 	case 61: /* Broadwell */
 		ret = bdw_uncore_pci_init();
+		break;
+	case 87: /* Knights Landing */
+		ret = knl_uncore_pci_init();
+		break;
+	case 94: /* SkyLake */
+		ret = skl_uncore_pci_init();
 		break;
 	default:
 		return 0;
@@ -1232,8 +1303,12 @@ static int __init uncore_cpu_init(void)
 	case 63: /* Haswell-EP */
 		hswep_uncore_cpu_init();
 		break;
+	case 79: /* BDX-EP */
 	case 86: /* BDX-DE */
 		bdx_uncore_cpu_init();
+		break;
+	case 87: /* Knights Landing */
+		knl_uncore_cpu_init();
 		break;
 	default:
 		return 0;

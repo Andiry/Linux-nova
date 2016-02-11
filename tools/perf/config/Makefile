@@ -17,7 +17,7 @@ detected_var = $(shell echo "$(1)=$($(1))" >> $(OUTPUT).config-detected)
 
 CFLAGS := $(EXTRA_CFLAGS) $(EXTRA_WARNINGS)
 
-include $(src-perf)/config/Makefile.arch
+include $(srctree)/tools/scripts/Makefile.arch
 
 $(call detected_var,ARCH)
 
@@ -106,8 +106,13 @@ ifdef LIBBABELTRACE
   FEATURE_CHECK_LDFLAGS-libbabeltrace := $(LIBBABELTRACE_LDFLAGS) -lbabeltrace-ctf
 endif
 
+FEATURE_CHECK_CFLAGS-bpf = -I. -I$(srctree)/tools/include -I$(srctree)/arch/$(ARCH)/include/uapi -I$(srctree)/include/uapi
 # include ARCH specific config
 -include $(src-perf)/arch/$(ARCH)/Makefile
+
+ifdef PERF_HAVE_ARCH_REGS_QUERY_REGISTER_OFFSET
+  CFLAGS += -DHAVE_ARCH_REGS_QUERY_REGISTER_OFFSET
+endif
 
 include $(src-perf)/config/utilities.mak
 
@@ -130,8 +135,6 @@ endif
 
 ifeq ($(DEBUG),0)
   CFLAGS += -O6
-else
-  CFLAGS += $(call cc-option,-Og,-O0)
 endif
 
 ifdef PARSER_DEBUG
@@ -178,7 +181,11 @@ LDFLAGS += -Wl,-z,noexecstack
 
 EXTLIBS = -lpthread -lrt -lm -ldl
 
+ifeq ($(FEATURES_DUMP),)
 include $(srctree)/tools/build/Makefile.feature
+else
+include $(FEATURES_DUMP)
+endif
 
 ifeq ($(feature-stackprotector-all), 1)
   CFLAGS += -fstack-protector-all
@@ -233,6 +240,7 @@ ifdef NO_LIBELF
   NO_DEMANGLE := 1
   NO_LIBUNWIND := 1
   NO_LIBDW_DWARF_UNWIND := 1
+  NO_LIBBPF := 1
 else
   ifeq ($(feature-libelf), 0)
     ifeq ($(feature-glibc), 1)
@@ -242,13 +250,14 @@ else
       LIBC_SUPPORT := 1
     endif
     ifeq ($(LIBC_SUPPORT),1)
-      msg := $(warning No libelf found, disables 'probe' tool, please install elfutils-libelf-devel/libelf-dev);
+      msg := $(warning No libelf found, disables 'probe' tool and BPF support in 'perf record', please install elfutils-libelf-devel/libelf-dev);
 
       NO_LIBELF := 1
       NO_DWARF := 1
       NO_DEMANGLE := 1
       NO_LIBUNWIND := 1
       NO_LIBDW_DWARF_UNWIND := 1
+      NO_LIBBPF := 1
     else
       ifneq ($(filter s% -static%,$(LDFLAGS),),)
         msg := $(error No static glibc found, please install glibc-static);
@@ -305,6 +314,25 @@ ifndef NO_LIBELF
       $(call detected,CONFIG_DWARF)
     endif # PERF_HAVE_DWARF_REGS
   endif # NO_DWARF
+
+  ifndef NO_LIBBPF
+    ifeq ($(feature-bpf), 1)
+      CFLAGS += -DHAVE_LIBBPF_SUPPORT
+      $(call detected,CONFIG_LIBBPF)
+    endif
+
+    ifndef NO_DWARF
+      ifdef PERF_HAVE_ARCH_REGS_QUERY_REGISTER_OFFSET
+        CFLAGS += -DHAVE_BPF_PROLOGUE
+        $(call detected,CONFIG_BPF_PROLOGUE)
+      else
+        msg := $(warning BPF prologue is not supported by architecture $(ARCH), missing regs_query_register_offset());
+      endif
+    else
+      msg := $(warning DWARF support is off, BPF prologue is disabled);
+    endif
+
+  endif # NO_LIBBPF
 endif # NO_LIBELF
 
 ifeq ($(ARCH),powerpc)
@@ -317,6 +345,13 @@ ifndef NO_LIBUNWIND
   ifneq ($(feature-libunwind), 1)
     msg := $(warning No libunwind found. Please install libunwind-dev[el] >= 1.1 and/or set LIBUNWIND_DIR);
     NO_LIBUNWIND := 1
+  endif
+endif
+
+ifndef NO_LIBBPF
+  ifneq ($(feature-bpf), 1)
+    msg := $(warning BPF API too old. Please install recent kernel headers. BPF support in 'perf record' is disabled.)
+    NO_LIBBPF := 1
   endif
 endif
 
@@ -462,7 +497,7 @@ else
 
       PYTHON_EMBED_LDOPTS := $(shell $(PYTHON_CONFIG_SQ) --ldflags 2>/dev/null)
       PYTHON_EMBED_LDFLAGS := $(call strip-libs,$(PYTHON_EMBED_LDOPTS))
-      PYTHON_EMBED_LIBADD := $(call grep-libs,$(PYTHON_EMBED_LDOPTS))
+      PYTHON_EMBED_LIBADD := $(call grep-libs,$(PYTHON_EMBED_LDOPTS)) -lutil
       PYTHON_EMBED_CCOPTS := $(shell $(PYTHON_CONFIG_SQ) --cflags 2>/dev/null)
       FLAGS_PYTHON_EMBED := $(PYTHON_EMBED_CCOPTS) $(PYTHON_EMBED_LDOPTS)
 
@@ -660,6 +695,8 @@ sharedir = $(prefix)/share
 template_dir = share/perf-core/templates
 STRACE_GROUPS_DIR = share/perf-core/strace/groups
 htmldir = share/doc/perf-doc
+tipdir = share/doc/perf-tip
+srcdir = $(srctree)/tools/perf
 ifeq ($(prefix),/usr)
 sysconfdir = /etc
 ETC_PERFCONFIG = $(sysconfdir)/perfconfig
@@ -686,19 +723,24 @@ infodir_SQ = $(subst ','\'',$(infodir))
 perfexecdir_SQ = $(subst ','\'',$(perfexecdir))
 template_dir_SQ = $(subst ','\'',$(template_dir))
 htmldir_SQ = $(subst ','\'',$(htmldir))
+tipdir_SQ = $(subst ','\'',$(tipdir))
 prefix_SQ = $(subst ','\'',$(prefix))
 sysconfdir_SQ = $(subst ','\'',$(sysconfdir))
 libdir_SQ = $(subst ','\'',$(libdir))
+srcdir_SQ = $(subst ','\'',$(srcdir))
 
 ifneq ($(filter /%,$(firstword $(perfexecdir))),)
 perfexec_instdir = $(perfexecdir)
 STRACE_GROUPS_INSTDIR = $(STRACE_GROUPS_DIR)
+tip_instdir = $(tipdir)
 else
 perfexec_instdir = $(prefix)/$(perfexecdir)
 STRACE_GROUPS_INSTDIR = $(prefix)/$(STRACE_GROUPS_DIR)
+tip_instdir = $(prefix)/$(tipdir)
 endif
 perfexec_instdir_SQ = $(subst ','\'',$(perfexec_instdir))
 STRACE_GROUPS_INSTDIR_SQ = $(subst ','\'',$(STRACE_GROUPS_INSTDIR))
+tip_instdir_SQ = $(subst ','\'',$(tip_instdir))
 
 # If we install to $(HOME) we keep the traceevent default:
 # $(HOME)/.traceevent/plugins
@@ -720,6 +762,10 @@ ifeq ($(VF),1)
   $(call print_var,sysconfdir)
   $(call print_var,LIBUNWIND_DIR)
   $(call print_var,LIBDW_DIR)
+
+  ifeq ($(dwarf-post-unwind),1)
+    $(call feature_print_text,"DWARF post unwind library", $(dwarf-post-unwind-text))
+  endif
   $(info )
 endif
 
@@ -735,6 +781,8 @@ $(call detected_var,ETC_PERFCONFIG_SQ)
 $(call detected_var,STRACE_GROUPS_DIR_SQ)
 $(call detected_var,prefix_SQ)
 $(call detected_var,perfexecdir_SQ)
+$(call detected_var,tipdir_SQ)
+$(call detected_var,srcdir_SQ)
 $(call detected_var,LIBDIR)
 $(call detected_var,GTK_CFLAGS)
 $(call detected_var,PERL_EMBED_CCOPTS)

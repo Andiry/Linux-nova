@@ -203,11 +203,13 @@ static void _wil6210_disconnect(struct wil6210_priv *wil, const u8 *bssid,
 	 * - disconnect single STA, already disconnected
 	 * - disconnect all
 	 *
-	 * For "disconnect all", there are 2 options:
+	 * For "disconnect all", there are 3 options:
 	 * - bssid == NULL
+	 * - bssid is broadcast address (ff:ff:ff:ff:ff:ff)
 	 * - bssid is our MAC address
 	 */
-	if (bssid && memcmp(ndev->dev_addr, bssid, ETH_ALEN)) {
+	if (bssid && !is_broadcast_ether_addr(bssid) &&
+	    !ether_addr_equal_unaligned(ndev->dev_addr, bssid)) {
 		cid = wil_find_cid(wil, bssid);
 		wil_dbg_misc(wil, "Disconnect %pM, CID=%d, reason=%d\n",
 			     bssid, cid, reason_code);
@@ -399,20 +401,26 @@ void wil_bcast_fini(struct wil6210_priv *wil)
 
 static void wil_connect_worker(struct work_struct *work)
 {
-	int rc;
+	int rc, cid, ringid;
 	struct wil6210_priv *wil = container_of(work, struct wil6210_priv,
 						connect_worker);
 	struct net_device *ndev = wil_to_ndev(wil);
 
-	int cid = wil->pending_connect_cid;
-	int ringid = wil_find_free_vring(wil);
+	mutex_lock(&wil->mutex);
 
+	cid = wil->pending_connect_cid;
 	if (cid < 0) {
 		wil_err(wil, "No connection pending\n");
-		return;
+		goto out;
+	}
+	ringid = wil_find_free_vring(wil);
+	if (ringid < 0) {
+		wil_err(wil, "No free vring found\n");
+		goto out;
 	}
 
-	wil_dbg_wmi(wil, "Configure for connection CID %d\n", cid);
+	wil_dbg_wmi(wil, "Configure for connection CID %d vring %d\n",
+		    cid, ringid);
 
 	rc = wil_vring_init_tx(wil, ringid, 1 << tx_ring_order, cid, 0);
 	wil->pending_connect_cid = -1;
@@ -420,8 +428,10 @@ static void wil_connect_worker(struct work_struct *work)
 		wil->sta[cid].status = wil_sta_connected;
 		netif_tx_wake_all_queues(ndev);
 	} else {
-		wil->sta[cid].status = wil_sta_unused;
+		wil_disconnect_cid(wil, cid, WLAN_REASON_UNSPECIFIED, true);
 	}
+out:
+	mutex_unlock(&wil->mutex);
 }
 
 int wil_priv_init(struct wil6210_priv *wil)
@@ -765,12 +775,16 @@ int wil_reset(struct wil6210_priv *wil, bool load_fw)
 	if (wil->hw_version == HW_VER_UNKNOWN)
 		return -ENODEV;
 
+	set_bit(wil_status_resetting, wil->status);
+
 	cancel_work_sync(&wil->disconnect_worker);
 	wil6210_disconnect(wil, NULL, WLAN_REASON_DEAUTH_LEAVING, false);
 	wil_bcast_fini(wil);
 
-	/* prevent NAPI from being scheduled */
+	/* prevent NAPI from being scheduled and prevent wmi commands */
+	mutex_lock(&wil->wmi_mutex);
 	bitmap_zero(wil->status, wil_status_last);
+	mutex_unlock(&wil->wmi_mutex);
 
 	if (wil->scan_request) {
 		wil_dbg_misc(wil, "Abort scan_request 0x%p\n",
@@ -851,6 +865,12 @@ int wil_reset(struct wil6210_priv *wil, bool load_fw)
 void wil_fw_error_recovery(struct wil6210_priv *wil)
 {
 	wil_dbg_misc(wil, "starting fw error recovery\n");
+
+	if (test_bit(wil_status_resetting, wil->status)) {
+		wil_info(wil, "Reset already in progress\n");
+		return;
+	}
+
 	wil->recovery_state = fw_recovery_pending;
 	schedule_work(&wil->fw_error_worker);
 }
@@ -967,7 +987,7 @@ int __wil_down(struct wil6210_priv *wil)
 	}
 	mutex_lock(&wil->mutex);
 
-	if (!iter)
+	if (iter < 0)
 		wil_err(wil, "timeout waiting for idle FW/HW\n");
 
 	wil_reset(wil, false);

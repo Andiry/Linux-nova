@@ -524,6 +524,7 @@ static const struct regmap_config lcc_msm8960_regmap_config = {
 	.val_bits	= 32,
 	.max_register	= 0xfc,
 	.fast_io	= true,
+	.val_format_endian = REGMAP_ENDIAN_LITTLE,
 };
 
 static const struct qcom_cc_desc lcc_msm8960_desc = {
@@ -565,15 +566,8 @@ static int lcc_msm8960_probe(struct platform_device *pdev)
 	return qcom_cc_really_probe(pdev, &lcc_msm8960_desc, regmap);
 }
 
-static int lcc_msm8960_remove(struct platform_device *pdev)
-{
-	qcom_cc_remove(pdev);
-	return 0;
-}
-
 static struct platform_driver lcc_msm8960_driver = {
 	.probe		= lcc_msm8960_probe,
-	.remove		= lcc_msm8960_remove,
 	.driver		= {
 		.name	= "lcc-msm8960",
 		.of_match_table = lcc_msm8960_match_table,

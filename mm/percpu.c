@@ -305,16 +305,12 @@ static void *pcpu_mem_zalloc(size_t size)
 /**
  * pcpu_mem_free - free memory
  * @ptr: memory to free
- * @size: size of the area
  *
  * Free @ptr.  @ptr should have been allocated using pcpu_mem_zalloc().
  */
-static void pcpu_mem_free(void *ptr, size_t size)
+static void pcpu_mem_free(void *ptr)
 {
-	if (size <= PAGE_SIZE)
-		kfree(ptr);
-	else
-		vfree(ptr);
+	kvfree(ptr);
 }
 
 /**
@@ -463,8 +459,8 @@ out_unlock:
 	 * pcpu_mem_free() might end up calling vfree() which uses
 	 * IRQ-unsafe lock and thus can't be called under pcpu_lock.
 	 */
-	pcpu_mem_free(old, old_size);
-	pcpu_mem_free(new, new_size);
+	pcpu_mem_free(old);
+	pcpu_mem_free(new);
 
 	return 0;
 }
@@ -732,7 +728,7 @@ static struct pcpu_chunk *pcpu_alloc_chunk(void)
 	chunk->map = pcpu_mem_zalloc(PCPU_DFL_MAP_ALLOC *
 						sizeof(chunk->map[0]));
 	if (!chunk->map) {
-		pcpu_mem_free(chunk, pcpu_chunk_struct_size);
+		pcpu_mem_free(chunk);
 		return NULL;
 	}
 
@@ -753,8 +749,8 @@ static void pcpu_free_chunk(struct pcpu_chunk *chunk)
 {
 	if (!chunk)
 		return;
-	pcpu_mem_free(chunk->map, chunk->map_alloc * sizeof(chunk->map[0]));
-	pcpu_mem_free(chunk, pcpu_chunk_struct_size);
+	pcpu_mem_free(chunk->map);
+	pcpu_mem_free(chunk);
 }
 
 /**
@@ -1554,12 +1550,12 @@ int __init pcpu_setup_first_chunk(const struct pcpu_alloc_info *ai,
 	PCPU_SETUP_BUG_ON(ai->nr_groups <= 0);
 #ifdef CONFIG_SMP
 	PCPU_SETUP_BUG_ON(!ai->static_size);
-	PCPU_SETUP_BUG_ON((unsigned long)__per_cpu_start & ~PAGE_MASK);
+	PCPU_SETUP_BUG_ON(offset_in_page(__per_cpu_start));
 #endif
 	PCPU_SETUP_BUG_ON(!base_addr);
-	PCPU_SETUP_BUG_ON((unsigned long)base_addr & ~PAGE_MASK);
+	PCPU_SETUP_BUG_ON(offset_in_page(base_addr));
 	PCPU_SETUP_BUG_ON(ai->unit_size < size_sum);
-	PCPU_SETUP_BUG_ON(ai->unit_size & ~PAGE_MASK);
+	PCPU_SETUP_BUG_ON(offset_in_page(ai->unit_size));
 	PCPU_SETUP_BUG_ON(ai->unit_size < PCPU_MIN_UNIT_SIZE);
 	PCPU_SETUP_BUG_ON(ai->dyn_size < PERCPU_DYNAMIC_EARLY_SIZE);
 	PCPU_SETUP_BUG_ON(pcpu_verify_alloc_info(ai) < 0);
@@ -1806,7 +1802,7 @@ static struct pcpu_alloc_info * __init pcpu_build_alloc_info(
 
 	alloc_size = roundup(min_unit_size, atom_size);
 	upa = alloc_size / min_unit_size;
-	while (alloc_size % upa || ((alloc_size / upa) & ~PAGE_MASK))
+	while (alloc_size % upa || (offset_in_page(alloc_size / upa)))
 		upa--;
 	max_upa = upa;
 
@@ -1838,7 +1834,7 @@ static struct pcpu_alloc_info * __init pcpu_build_alloc_info(
 	for (upa = max_upa; upa; upa--) {
 		int allocs = 0, wasted = 0;
 
-		if (alloc_size % upa || ((alloc_size / upa) & ~PAGE_MASK))
+		if (alloc_size % upa || (offset_in_page(alloc_size / upa)))
 			continue;
 
 		for (group = 0; group < nr_groups; group++) {

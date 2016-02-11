@@ -529,7 +529,7 @@ static void __eoi_ioapic_pin(int apic, int pin, int vector)
 	}
 }
 
-void eoi_ioapic_pin(int vector, struct mp_chip_data *data)
+static void eoi_ioapic_pin(int vector, struct mp_chip_data *data)
 {
 	unsigned long flags;
 	struct irq_pin_list *entry;
@@ -2521,6 +2521,7 @@ void __init setup_ioapic_dest(void)
 {
 	int pin, ioapic, irq, irq_entry;
 	const struct cpumask *mask;
+	struct irq_desc *desc;
 	struct irq_data *idata;
 	struct irq_chip *chip;
 
@@ -2536,7 +2537,9 @@ void __init setup_ioapic_dest(void)
 		if (irq < 0 || !mp_init_irq_at_boot(ioapic, irq))
 			continue;
 
-		idata = irq_get_irq_data(irq);
+		desc = irq_to_desc(irq);
+		raw_spin_lock_irq(&desc->lock);
+		idata = irq_desc_get_irq_data(desc);
 
 		/*
 		 * Honour affinities which have been set in early boot
@@ -2547,7 +2550,10 @@ void __init setup_ioapic_dest(void)
 			mask = apic->target_cpus();
 
 		chip = irq_data_get_irq_chip(idata);
-		chip->irq_set_affinity(idata, mask, false);
+		/* Might be lapic_chip for irq 0 */
+		if (chip->irq_set_affinity)
+			chip->irq_set_affinity(idata, mask, false);
+		raw_spin_unlock_irq(&desc->lock);
 	}
 }
 #endif
@@ -2907,6 +2913,7 @@ int mp_irqdomain_alloc(struct irq_domain *domain, unsigned int virq,
 	struct irq_data *irq_data;
 	struct mp_chip_data *data;
 	struct irq_alloc_info *info = arg;
+	unsigned long flags;
 
 	if (!info || nr_irqs > 1)
 		return -EINVAL;
@@ -2939,11 +2946,14 @@ int mp_irqdomain_alloc(struct irq_domain *domain, unsigned int virq,
 
 	cfg = irqd_cfg(irq_data);
 	add_pin_to_irq_node(data, ioapic_alloc_attr_node(info), ioapic, pin);
+
+	local_irq_save(flags);
 	if (info->ioapic_entry)
 		mp_setup_entry(cfg, data, info->ioapic_entry);
 	mp_register_handler(virq, data->trigger);
 	if (virq < nr_legacy_irqs())
 		legacy_pic->mask(virq);
+	local_irq_restore(flags);
 
 	apic_printk(APIC_VERBOSE, KERN_DEBUG
 		    "IOAPIC[%d]: Set routing entry (%d-%d -> 0x%x -> IRQ %d Mode:%i Active:%i Dest:%d)\n",

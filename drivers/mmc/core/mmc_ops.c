@@ -489,6 +489,7 @@ int __mmc_switch(struct mmc_card *card, u8 set, u8 index, u8 value,
 	unsigned long timeout;
 	u32 status = 0;
 	bool use_r1b_resp = use_busy_signal;
+	bool expired = false;
 
 	mmc_retune_hold(host);
 
@@ -545,6 +546,12 @@ int __mmc_switch(struct mmc_card *card, u8 set, u8 index, u8 value,
 	timeout = jiffies + msecs_to_jiffies(timeout_ms);
 	do {
 		if (send_status) {
+			/*
+			 * Due to the possibility of being preempted after
+			 * sending the status command, check the expiration
+			 * time first.
+			 */
+			expired = time_after(jiffies, timeout);
 			err = __mmc_send_status(card, &status, ignore_crc);
 			if (err)
 				goto out;
@@ -565,7 +572,7 @@ int __mmc_switch(struct mmc_card *card, u8 set, u8 index, u8 value,
 		}
 
 		/* Timeout if the device never leaves the program state. */
-		if (time_after(jiffies, timeout)) {
+		if (expired && R1_CURRENT_STATE(status) == R1_STATE_PRG) {
 			pr_err("%s: Card stuck in programming state! %s\n",
 				mmc_hostname(host), __func__);
 			err = -ETIMEDOUT;
@@ -579,7 +586,6 @@ out:
 
 	return err;
 }
-EXPORT_SYMBOL_GPL(__mmc_switch);
 
 int mmc_switch(struct mmc_card *card, u8 set, u8 index, u8 value,
 		unsigned int timeout_ms)
@@ -589,7 +595,7 @@ int mmc_switch(struct mmc_card *card, u8 set, u8 index, u8 value,
 }
 EXPORT_SYMBOL_GPL(mmc_switch);
 
-int mmc_send_tuning(struct mmc_host *host)
+int mmc_send_tuning(struct mmc_host *host, u32 opcode, int *cmd_error)
 {
 	struct mmc_request mrq = {NULL};
 	struct mmc_command cmd = {0};
@@ -599,16 +605,13 @@ int mmc_send_tuning(struct mmc_host *host)
 	const u8 *tuning_block_pattern;
 	int size, err = 0;
 	u8 *data_buf;
-	u32 opcode;
 
 	if (ios->bus_width == MMC_BUS_WIDTH_8) {
 		tuning_block_pattern = tuning_blk_pattern_8bit;
 		size = sizeof(tuning_blk_pattern_8bit);
-		opcode = MMC_SEND_TUNING_BLOCK_HS200;
 	} else if (ios->bus_width == MMC_BUS_WIDTH_4) {
 		tuning_block_pattern = tuning_blk_pattern_4bit;
 		size = sizeof(tuning_blk_pattern_4bit);
-		opcode = MMC_SEND_TUNING_BLOCK;
 	} else
 		return -EINVAL;
 
@@ -638,6 +641,9 @@ int mmc_send_tuning(struct mmc_host *host)
 	sg_init_one(&sg, data_buf, size);
 
 	mmc_wait_for_req(host, &mrq);
+
+	if (cmd_error)
+		*cmd_error = cmd.error;
 
 	if (cmd.error) {
 		err = cmd.error;

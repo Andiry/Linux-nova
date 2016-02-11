@@ -55,7 +55,7 @@ config USB_LPC32XX
 
 config USB_ATMEL_USBA
 	tristate "Atmel USBA"
-	depends on AVR32 || ARCH_AT91
+	depends on ((AVR32 && !OF) || ARCH_AT91)
 	help
 	  USBA is the integrated high-speed USB Device controller on
 	  the AT32AP700x, some AT91SAM9 and AT91CAP9 processors from Atmel.
@@ -172,6 +172,17 @@ config USB_RENESAS_USBHS_UDC
 
 	   Say "y" to link the driver statically, or "m" to build a
 	   dynamically linked module called "renesas_usbhs" and force all
+	   gadget drivers to also be dynamically linked.
+
+config USB_RENESAS_USB3
+	tristate 'Renesas USB3.0 Peripheral controller'
+	depends on ARCH_SHMOBILE || COMPILE_TEST
+	help
+	   Renesas USB3.0 Peripheral controller is a USB peripheral controller
+	   that supports super, high, and full speed USB 3.0 data transfers.
+
+	   Say "y" to link the driver statically, or "m" to build a
+	   dynamically linked module called "renesas_usb3" and force all
 	   gadget drivers to also be dynamically linked.
 
 config USB_PXA27X

@@ -139,6 +139,7 @@ enum ixgbe_tx_flags {
 #define IXGBE_X540_VF_DEVICE_ID         0x1515
 
 struct vf_data_storage {
+	struct pci_dev *vfdev;
 	unsigned char vf_mac_addresses[ETH_ALEN];
 	u16 vf_mc_hashes[IXGBE_MAX_VF_MC_ENTRIES];
 	u16 num_vf_mc_hashes;
@@ -152,7 +153,15 @@ struct vf_data_storage {
 	u16 vlan_count;
 	u8 spoofchk_enabled;
 	bool rss_query_enabled;
+	u8 trusted;
+	int xcast_mode;
 	unsigned int vf_api;
+};
+
+enum ixgbevf_xcast_modes {
+	IXGBEVF_XCAST_MODE_NONE = 0,
+	IXGBEVF_XCAST_MODE_MULTI,
+	IXGBEVF_XCAST_MODE_ALLMULTI,
 };
 
 struct vf_macvlans {
@@ -216,6 +225,8 @@ struct ixgbe_rx_queue_stats {
 	u64 csum_err;
 };
 
+#define IXGBE_TS_HDR_LEN 8
+
 enum ixgbe_ring_state_t {
 	__IXGBE_TX_FDIR_INIT_DONE,
 	__IXGBE_TX_XPS_INIT_DONE,
@@ -274,6 +285,8 @@ struct ixgbe_ring {
 	u16 next_to_use;
 	u16 next_to_clean;
 
+	unsigned long last_rx_timestamp;
+
 	union {
 		u16 next_to_alloc;
 		struct {
@@ -304,7 +317,7 @@ enum ixgbe_ring_f_enum {
 };
 
 #define IXGBE_MAX_RSS_INDICES		16
-#define IXGBE_MAX_RSS_INDICES_X550	64
+#define IXGBE_MAX_RSS_INDICES_X550	63
 #define IXGBE_MAX_VMDQ_INDICES		64
 #define IXGBE_MAX_FDIR_INDICES		63	/* based on q_vector limit */
 #define IXGBE_MAX_FCOE_INDICES		8
@@ -539,8 +552,7 @@ struct hwmon_buff {
 #define IXGBE_MIN_RSC_ITR	24
 #define IXGBE_100K_ITR		40
 #define IXGBE_20K_ITR		200
-#define IXGBE_10K_ITR		400
-#define IXGBE_8K_ITR		500
+#define IXGBE_12K_ITR		336
 
 /* ixgbe_test_staterr - tests bits in Rx descriptor status and error fields */
 static inline __le32 ixgbe_test_staterr(union ixgbe_adv_rx_desc *rx_desc,
@@ -580,9 +592,10 @@ static inline u16 ixgbe_desc_unused(struct ixgbe_ring *ring)
 
 struct ixgbe_mac_addr {
 	u8 addr[ETH_ALEN];
-	u16 queue;
+	u16 pool;
 	u16 state; /* bitmask */
 };
+
 #define IXGBE_MAC_STATE_DEFAULT		0x1
 #define IXGBE_MAC_STATE_MODIFIED	0x2
 #define IXGBE_MAC_STATE_IN_USE		0x4
@@ -595,6 +608,7 @@ struct ixgbe_mac_addr {
 
 /* default to trying for four seconds */
 #define IXGBE_TRY_LINK_TIMEOUT (4 * HZ)
+#define IXGBE_SFP_POLL_JIFFIES (2 * HZ)	/* SFP poll every 2 seconds */
 
 /* board specific private data structure */
 struct ixgbe_adapter {
@@ -631,6 +645,8 @@ struct ixgbe_adapter {
 #define IXGBE_FLAG_SRIOV_CAPABLE                (u32)(1 << 22)
 #define IXGBE_FLAG_SRIOV_ENABLED                (u32)(1 << 23)
 #define IXGBE_FLAG_VXLAN_OFFLOAD_CAPABLE	BIT(24)
+#define IXGBE_FLAG_RX_HWTSTAMP_ENABLED		BIT(25)
+#define IXGBE_FLAG_RX_HWTSTAMP_IN_REGISTER	BIT(26)
 
 	u32 flags2;
 #define IXGBE_FLAG2_RSC_CAPABLE                 (u32)(1 << 0)
@@ -648,6 +664,7 @@ struct ixgbe_adapter {
 #ifdef CONFIG_IXGBE_VXLAN
 #define IXGBE_FLAG2_VXLAN_REREG_NEEDED		BIT(12)
 #endif
+#define IXGBE_FLAG2_VLAN_PROMISC		BIT(13)
 
 	/* Tx fast path data */
 	int num_tx_queues;
@@ -708,6 +725,7 @@ struct ixgbe_adapter {
 
 	u32 link_speed;
 	bool link_up;
+	unsigned long sfp_poll_time;
 	unsigned long link_check_timeout;
 
 	struct timer_list service_timer;
@@ -746,9 +764,12 @@ struct ixgbe_adapter {
 	unsigned long last_rx_ptp_check;
 	unsigned long last_rx_timestamp;
 	spinlock_t tmreg_lock;
-	struct cyclecounter cc;
-	struct timecounter tc;
+	struct cyclecounter hw_cc;
+	struct timecounter hw_tc;
 	u32 base_incval;
+	u32 tx_hwtstamp_timeouts;
+	u32 rx_hwtstamp_cleared;
+	void (*ptp_setup_sdp)(struct ixgbe_adapter *);
 
 	/* SR-IOV */
 	DECLARE_BITMAP(active_vfs, IXGBE_MAX_VF_FUNCTIONS);
@@ -874,9 +895,10 @@ int ixgbe_wol_supported(struct ixgbe_adapter *adapter, u16 device_id,
 void ixgbe_full_sync_mac_table(struct ixgbe_adapter *adapter);
 #endif
 int ixgbe_add_mac_filter(struct ixgbe_adapter *adapter,
-			 u8 *addr, u16 queue);
+			 const u8 *addr, u16 queue);
 int ixgbe_del_mac_filter(struct ixgbe_adapter *adapter,
-			 u8 *addr, u16 queue);
+			 const u8 *addr, u16 queue);
+void ixgbe_update_pf_promisc_vlvf(struct ixgbe_adapter *adapter, u32 vid);
 void ixgbe_clear_interrupt_scheme(struct ixgbe_adapter *adapter);
 netdev_tx_t ixgbe_xmit_frame_ring(struct sk_buff *, struct ixgbe_adapter *,
 				  struct ixgbe_ring *);
@@ -959,12 +981,33 @@ void ixgbe_ptp_suspend(struct ixgbe_adapter *adapter);
 void ixgbe_ptp_stop(struct ixgbe_adapter *adapter);
 void ixgbe_ptp_overflow_check(struct ixgbe_adapter *adapter);
 void ixgbe_ptp_rx_hang(struct ixgbe_adapter *adapter);
-void ixgbe_ptp_rx_hwtstamp(struct ixgbe_adapter *adapter, struct sk_buff *skb);
+void ixgbe_ptp_rx_pktstamp(struct ixgbe_q_vector *, struct sk_buff *);
+void ixgbe_ptp_rx_rgtstamp(struct ixgbe_q_vector *, struct sk_buff *skb);
+static inline void ixgbe_ptp_rx_hwtstamp(struct ixgbe_ring *rx_ring,
+					 union ixgbe_adv_rx_desc *rx_desc,
+					 struct sk_buff *skb)
+{
+	if (unlikely(ixgbe_test_staterr(rx_desc, IXGBE_RXD_STAT_TSIP))) {
+		ixgbe_ptp_rx_pktstamp(rx_ring->q_vector, skb);
+		return;
+	}
+
+	if (unlikely(!ixgbe_test_staterr(rx_desc, IXGBE_RXDADV_STAT_TS)))
+		return;
+
+	ixgbe_ptp_rx_rgtstamp(rx_ring->q_vector, skb);
+
+	/* Update the last_rx_timestamp timer in order to enable watchdog check
+	 * for error case of latched timestamp on a dropped packet.
+	 */
+	rx_ring->last_rx_timestamp = jiffies;
+}
+
 int ixgbe_ptp_set_ts_config(struct ixgbe_adapter *adapter, struct ifreq *ifr);
 int ixgbe_ptp_get_ts_config(struct ixgbe_adapter *adapter, struct ifreq *ifr);
 void ixgbe_ptp_start_cyclecounter(struct ixgbe_adapter *adapter);
 void ixgbe_ptp_reset(struct ixgbe_adapter *adapter);
-void ixgbe_ptp_check_pps_event(struct ixgbe_adapter *adapter, u32 eicr);
+void ixgbe_ptp_check_pps_event(struct ixgbe_adapter *adapter);
 #ifdef CONFIG_PCI_IOV
 void ixgbe_sriov_reinit(struct ixgbe_adapter *adapter);
 #endif

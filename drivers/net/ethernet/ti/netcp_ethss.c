@@ -2178,7 +2178,7 @@ static int gbe_slave_open(struct gbe_intf *gbe_intf)
 			return -ENODEV;
 		}
 		dev_dbg(priv->dev, "phy found: id is: 0x%s\n",
-			dev_name(&slave->phy->dev));
+			phydev_name(slave->phy));
 		phy_start(slave->phy);
 		phy_read_status(slave->phy);
 	}
@@ -2637,8 +2637,10 @@ static void init_secondary_ports(struct gbe_priv *gbe_dev,
 			mac_phy_link = true;
 
 		slave->open = true;
-		if (gbe_dev->num_slaves >= gbe_dev->max_num_slaves)
+		if (gbe_dev->num_slaves >= gbe_dev->max_num_slaves) {
+			of_node_put(port);
 			break;
+		}
 	}
 
 	/* of_phy_connect() is needed only for MAC-PHY interface */
@@ -2679,7 +2681,7 @@ static void init_secondary_ports(struct gbe_priv *gbe_dev,
 			slave->phy = NULL;
 		} else {
 			dev_dbg(dev, "phy found: id is: 0x%s\n",
-				dev_name(&slave->phy->dev));
+				phydev_name(slave->phy));
 			phy_start(slave->phy);
 			phy_read_status(slave->phy);
 		}
@@ -3137,8 +3139,10 @@ static int gbe_probe(struct netcp_device *netcp_device, struct device *dev,
 			continue;
 		}
 		gbe_dev->num_slaves++;
-		if (gbe_dev->num_slaves >= gbe_dev->max_num_slaves)
+		if (gbe_dev->num_slaves >= gbe_dev->max_num_slaves) {
+			of_node_put(interface);
 			break;
+		}
 	}
 	of_node_put(interfaces);
 

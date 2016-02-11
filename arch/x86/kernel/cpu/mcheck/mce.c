@@ -114,7 +114,6 @@ static struct work_struct mce_work;
 static struct irq_work mce_irq_work;
 
 static void (*quirk_no_way_out)(int bank, struct mce *m, struct pt_regs *regs);
-static int mce_usable_address(struct mce *m);
 
 /*
  * CPU/chipset specific EDAC code can register a notifier call here to print
@@ -475,6 +474,28 @@ static void mce_report_event(struct pt_regs *regs)
 	irq_work_queue(&mce_irq_work);
 }
 
+/*
+ * Check if the address reported by the CPU is in a format we can parse.
+ * It would be possible to add code for most other cases, but all would
+ * be somewhat complicated (e.g. segment offset would require an instruction
+ * parser). So only support physical addresses up to page granuality for now.
+ */
+static int mce_usable_address(struct mce *m)
+{
+	if (!(m->status & MCI_STATUS_MISCV) || !(m->status & MCI_STATUS_ADDRV))
+		return 0;
+
+	/* Checks after this one are Intel-specific: */
+	if (boot_cpu_data.x86_vendor != X86_VENDOR_INTEL)
+		return 1;
+
+	if (MCI_MISC_ADDR_LSB(m->misc) > PAGE_SHIFT)
+		return 0;
+	if (MCI_MISC_ADDR_MODE(m->misc) != MCI_MISC_ADDR_PHYS)
+		return 0;
+	return 1;
+}
+
 static int srao_decode_notifier(struct notifier_block *nb, unsigned long val,
 				void *data)
 {
@@ -484,7 +505,7 @@ static int srao_decode_notifier(struct notifier_block *nb, unsigned long val,
 	if (!mce)
 		return NOTIFY_DONE;
 
-	if (mce->usable_addr && (mce->severity == MCE_AO_SEVERITY)) {
+	if (mce_usable_address(mce) && (mce->severity == MCE_AO_SEVERITY)) {
 		pfn = mce->addr >> PAGE_SHIFT;
 		memory_failure(pfn, MCE_VECTOR, 0);
 	}
@@ -522,10 +543,10 @@ static bool memory_error(struct mce *m)
 	struct cpuinfo_x86 *c = &boot_cpu_data;
 
 	if (c->x86_vendor == X86_VENDOR_AMD) {
-		/*
-		 * coming soon
-		 */
-		return false;
+		/* ErrCodeExt[20:16] */
+		u8 xec = (m->status >> 16) & 0x1f;
+
+		return (xec == 0x0 || xec == 0x8);
 	} else if (c->x86_vendor == X86_VENDOR_INTEL) {
 		/*
 		 * Intel SDM Volume 3B - 15.9.2 Compound Error Codes
@@ -567,7 +588,7 @@ DEFINE_PER_CPU(unsigned, mce_poll_count);
  */
 bool machine_check_poll(enum mcp_flags flags, mce_banks_t *b)
 {
-	bool error_logged = false;
+	bool error_seen = false;
 	struct mce m;
 	int severity;
 	int i;
@@ -601,6 +622,8 @@ bool machine_check_poll(enum mcp_flags flags, mce_banks_t *b)
 		    (m.status & (mca_cfg.ser ? MCI_STATUS_S : MCI_STATUS_UC)))
 			continue;
 
+		error_seen = true;
+
 		mce_read_aux(&m, i);
 
 		if (!(flags & MCP_TIMESTAMP))
@@ -608,27 +631,24 @@ bool machine_check_poll(enum mcp_flags flags, mce_banks_t *b)
 
 		severity = mce_severity(&m, mca_cfg.tolerant, NULL, false);
 
-		/*
-		 * In the cases where we don't have a valid address after all,
-		 * do not add it into the ring buffer.
-		 */
-		if (severity == MCE_DEFERRED_SEVERITY && memory_error(&m)) {
-			if (m.status & MCI_STATUS_ADDRV) {
+		if (severity == MCE_DEFERRED_SEVERITY && memory_error(&m))
+			if (m.status & MCI_STATUS_ADDRV)
 				m.severity = severity;
-				m.usable_addr = mce_usable_address(&m);
-
-				if (!mce_gen_pool_add(&m))
-					mce_schedule_work();
-			}
-		}
 
 		/*
 		 * Don't get the IP here because it's unlikely to
 		 * have anything to do with the actual error location.
 		 */
-		if (!(flags & MCP_DONTLOG) && !mca_cfg.dont_log_ce) {
-			error_logged = true;
+		if (!(flags & MCP_DONTLOG) && !mca_cfg.dont_log_ce)
 			mce_log(&m);
+		else if (mce_usable_address(&m)) {
+			/*
+			 * Although we skipped logging this, we still want
+			 * to take action. Add to the pool so the registered
+			 * notifiers will see it.
+			 */
+			if (!mce_gen_pool_add(&m))
+				mce_schedule_work();
 		}
 
 		/*
@@ -644,7 +664,7 @@ bool machine_check_poll(enum mcp_flags flags, mce_banks_t *b)
 
 	sync_core();
 
-	return error_logged;
+	return error_seen;
 }
 EXPORT_SYMBOL_GPL(machine_check_poll);
 
@@ -931,23 +951,6 @@ reset:
 	return ret;
 }
 
-/*
- * Check if the address reported by the CPU is in a format we can parse.
- * It would be possible to add code for most other cases, but all would
- * be somewhat complicated (e.g. segment offset would require an instruction
- * parser). So only support physical addresses up to page granuality for now.
- */
-static int mce_usable_address(struct mce *m)
-{
-	if (!(m->status & MCI_STATUS_MISCV) || !(m->status & MCI_STATUS_ADDRV))
-		return 0;
-	if (MCI_MISC_ADDR_LSB(m->misc) > PAGE_SHIFT)
-		return 0;
-	if (MCI_MISC_ADDR_MODE(m->misc) != MCI_MISC_ADDR_PHYS)
-		return 0;
-	return 1;
-}
-
 static void mce_clear_state(unsigned long *toclear)
 {
 	int i;
@@ -998,6 +1001,17 @@ void do_machine_check(struct pt_regs *regs, long error_code)
 	u64 recover_paddr = ~0ull;
 	int flags = MF_ACTION_REQUIRED;
 	int lmce = 0;
+
+	/* If this CPU is offline, just bail out. */
+	if (cpu_is_offline(smp_processor_id())) {
+		u64 mcgstatus;
+
+		mcgstatus = mce_rdmsrl(MSR_IA32_MCG_STATUS);
+		if (mcgstatus & MCG_STATUS_RIPV) {
+			mce_wrmsrl(MSR_IA32_MCG_STATUS, 0);
+			return;
+		}
+	}
 
 	ist_enter(regs);
 
@@ -1089,7 +1103,6 @@ void do_machine_check(struct pt_regs *regs, long error_code)
 
 		/* assuming valid severity level != 0 */
 		m.severity = severity;
-		m.usable_addr = mce_usable_address(&m);
 
 		mce_log(&m);
 
@@ -1586,6 +1599,8 @@ static int __mcheck_cpu_ancient_init(struct cpuinfo_x86 *c)
 		winchip_mcheck_init(c);
 		return 1;
 		break;
+	default:
+		return 0;
 	}
 
 	return 0;
@@ -1605,6 +1620,8 @@ static void __mcheck_cpu_init_vendor(struct cpuinfo_x86 *c)
 		mce_amd_feature_init(c);
 		mce_flags.overflow_recov = !!(ebx & BIT(0));
 		mce_flags.succor	 = !!(ebx & BIT(1));
+		mce_flags.smca		 = !!(ebx & BIT(3));
+
 		break;
 		}
 
@@ -2042,7 +2059,7 @@ int __init mcheck_init(void)
  * Disable machine checks on suspend and shutdown. We can't really handle
  * them later.
  */
-static int mce_disable_error_reporting(void)
+static void mce_disable_error_reporting(void)
 {
 	int i;
 
@@ -2052,17 +2069,32 @@ static int mce_disable_error_reporting(void)
 		if (b->init)
 			wrmsrl(MSR_IA32_MCx_CTL(i), 0);
 	}
-	return 0;
+	return;
+}
+
+static void vendor_disable_error_reporting(void)
+{
+	/*
+	 * Don't clear on Intel CPUs. Some of these MSRs are socket-wide.
+	 * Disabling them for just a single offlined CPU is bad, since it will
+	 * inhibit reporting for all shared resources on the socket like the
+	 * last level cache (LLC), the integrated memory controller (iMC), etc.
+	 */
+	if (boot_cpu_data.x86_vendor == X86_VENDOR_INTEL)
+		return;
+
+	mce_disable_error_reporting();
 }
 
 static int mce_syscore_suspend(void)
 {
-	return mce_disable_error_reporting();
+	vendor_disable_error_reporting();
+	return 0;
 }
 
 static void mce_syscore_shutdown(void)
 {
-	mce_disable_error_reporting();
+	vendor_disable_error_reporting();
 }
 
 /*
@@ -2342,19 +2374,14 @@ static void mce_device_remove(unsigned int cpu)
 static void mce_disable_cpu(void *h)
 {
 	unsigned long action = *(unsigned long *)h;
-	int i;
 
 	if (!mce_available(raw_cpu_ptr(&cpu_info)))
 		return;
 
 	if (!(action & CPU_TASKS_FROZEN))
 		cmci_clear();
-	for (i = 0; i < mca_cfg.banks; i++) {
-		struct mce_bank *b = &mce_banks[i];
 
-		if (b->init)
-			wrmsrl(MSR_IA32_MCx_CTL(i), 0);
-	}
+	vendor_disable_error_reporting();
 }
 
 static void mce_reenable_cpu(void *h)

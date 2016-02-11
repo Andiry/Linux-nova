@@ -44,6 +44,24 @@ static inline bool skb_valid_dst(const struct sk_buff *skb)
 	return dst && !(dst->flags & DST_METADATA);
 }
 
+static inline int skb_metadata_dst_cmp(const struct sk_buff *skb_a,
+				       const struct sk_buff *skb_b)
+{
+	const struct metadata_dst *a, *b;
+
+	if (!(skb_a->_skb_refdst | skb_b->_skb_refdst))
+		return 0;
+
+	a = (const struct metadata_dst *) skb_dst(skb_a);
+	b = (const struct metadata_dst *) skb_dst(skb_b);
+
+	if (!a != !b || a->u.tun_info.options_len != b->u.tun_info.options_len)
+		return 1;
+
+	return memcmp(&a->u.tun_info, &b->u.tun_info,
+		      sizeof(a->u.tun_info) + a->u.tun_info.options_len);
+}
+
 struct metadata_dst *metadata_dst_alloc(u8 optslen, gfp_t flags);
 struct metadata_dst __percpu *metadata_dst_alloc_percpu(u8 optslen, gfp_t flags);
 
@@ -58,6 +76,39 @@ static inline struct metadata_dst *tun_rx_dst(int md_size)
 	tun_dst->u.tun_info.options_len = 0;
 	tun_dst->u.tun_info.mode = 0;
 	return tun_dst;
+}
+
+static inline struct metadata_dst *tun_dst_unclone(struct sk_buff *skb)
+{
+	struct metadata_dst *md_dst = skb_metadata_dst(skb);
+	int md_size;
+	struct metadata_dst *new_md;
+
+	if (!md_dst)
+		return ERR_PTR(-EINVAL);
+
+	md_size = md_dst->u.tun_info.options_len;
+	new_md = metadata_dst_alloc(md_size, GFP_ATOMIC);
+	if (!new_md)
+		return ERR_PTR(-ENOMEM);
+
+	memcpy(&new_md->u.tun_info, &md_dst->u.tun_info,
+	       sizeof(struct ip_tunnel_info) + md_size);
+	skb_dst_drop(skb);
+	dst_hold(&new_md->dst);
+	skb_dst_set(skb, &new_md->dst);
+	return new_md;
+}
+
+static inline struct ip_tunnel_info *skb_tunnel_info_unclone(struct sk_buff *skb)
+{
+	struct metadata_dst *dst;
+
+	dst = tun_dst_unclone(skb);
+	if (IS_ERR(dst))
+		return NULL;
+
+	return &dst->u.tun_info;
 }
 
 static inline struct metadata_dst *ip_tun_rx_dst(struct sk_buff *skb,

@@ -227,6 +227,7 @@ enum i40e_admin_queue_opc {
 	i40e_aqc_opc_nvm_update			= 0x0703,
 	i40e_aqc_opc_nvm_config_read		= 0x0704,
 	i40e_aqc_opc_nvm_config_write		= 0x0705,
+	i40e_aqc_opc_oem_post_update		= 0x0720,
 
 	/* virtualization commands */
 	i40e_aqc_opc_send_msg_to_pf		= 0x0801,
@@ -1719,11 +1720,13 @@ struct i40e_aqc_get_link_status {
 	u8	phy_type;    /* i40e_aq_phy_type   */
 	u8	link_speed;  /* i40e_aq_link_speed */
 	u8	link_info;
-#define I40E_AQ_LINK_UP			0x01
+#define I40E_AQ_LINK_UP			0x01    /* obsolete */
+#define I40E_AQ_LINK_UP_FUNCTION	0x01
 #define I40E_AQ_LINK_FAULT		0x02
 #define I40E_AQ_LINK_FAULT_TX		0x04
 #define I40E_AQ_LINK_FAULT_RX		0x08
 #define I40E_AQ_LINK_FAULT_REMOTE	0x10
+#define I40E_AQ_LINK_UP_PORT		0x20
 #define I40E_AQ_MEDIA_AVAILABLE		0x40
 #define I40E_AQ_SIGNAL_DETECT		0x80
 	u8	an_info;
@@ -1885,6 +1888,26 @@ struct i40e_aqc_nvm_config_data_immediate_field {
 };
 
 I40E_CHECK_STRUCT_LEN(0xc, i40e_aqc_nvm_config_data_immediate_field);
+
+/* OEM Post Update (indirect 0x0720)
+ * no command data struct used
+ */
+ struct i40e_aqc_nvm_oem_post_update {
+#define I40E_AQ_NVM_OEM_POST_UPDATE_EXTERNAL_DATA	0x01
+	u8 sel_data;
+	u8 reserved[7];
+};
+
+I40E_CHECK_STRUCT_LEN(0x8, i40e_aqc_nvm_oem_post_update);
+
+struct i40e_aqc_nvm_oem_post_update_buffer {
+	u8 str_len;
+	u8 dev_addr;
+	__le16 eeprom_addr;
+	u8 data[36];
+};
+
+I40E_CHECK_STRUCT_LEN(0x28, i40e_aqc_nvm_oem_post_update_buffer);
 
 /* Send to PF command (indirect 0x0801) id is only used by PF
  * Send to VF command (indirect 0x0802) id is only used by PF
@@ -2309,4 +2332,4 @@ struct i40e_aqc_debug_modify_internals {
 
 I40E_CHECK_CMD_LENGTH(i40e_aqc_debug_modify_internals);
 
-#endif
+#endif /* _I40E_ADMINQ_CMD_H_ */

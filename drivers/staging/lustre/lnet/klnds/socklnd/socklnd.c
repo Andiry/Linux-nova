@@ -27,7 +27,7 @@
  * Copyright (c) 2003, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
  *
- * Copyright (c) 2011, 2012, Intel Corporation.
+ * Copyright (c) 2011, 2015, Intel Corporation.
  */
 /*
  * This file is part of Lustre, http://www.lustre.org/
@@ -1838,7 +1838,6 @@ ksocknal_query(lnet_ni_t *ni, lnet_nid_t nid, unsigned long *when)
 		ksocknal_launch_all_connections_locked(peer);
 
 	write_unlock_bh(glock);
-	return;
 }
 
 static void
@@ -1874,52 +1873,51 @@ ksocknal_push_peer(ksock_peer_t *peer)
 	}
 }
 
-static int
-ksocknal_push(lnet_ni_t *ni, lnet_process_id_t id)
+static int ksocknal_push(lnet_ni_t *ni, lnet_process_id_t id)
 {
-	ksock_peer_t *peer;
+	struct list_head *start;
+	struct list_head *end;
 	struct list_head *tmp;
-	int index;
-	int i;
-	int j;
 	int rc = -ENOENT;
+	unsigned int hsize = ksocknal_data.ksnd_peer_hash_size;
 
-	for (i = 0; i < ksocknal_data.ksnd_peer_hash_size; i++) {
-		for (j = 0; ; j++) {
+	if (id.nid == LNET_NID_ANY) {
+		start = &ksocknal_data.ksnd_peers[0];
+		end = &ksocknal_data.ksnd_peers[hsize - 1];
+	} else {
+		start = end = ksocknal_nid2peerlist(id.nid);
+	}
+
+	for (tmp = start; tmp <= end; tmp++) {
+		int peer_off; /* searching offset in peer hash table */
+
+		for (peer_off = 0; ; peer_off++) {
+			ksock_peer_t *peer;
+			int i = 0;
+
 			read_lock(&ksocknal_data.ksnd_global_lock);
-
-			index = 0;
-			peer = NULL;
-
-			list_for_each(tmp, &ksocknal_data.ksnd_peers[i]) {
-				peer = list_entry(tmp, ksock_peer_t,
-						      ksnp_list);
-
+			list_for_each_entry(peer, tmp, ksnp_list) {
 				if (!((id.nid == LNET_NID_ANY ||
 				       id.nid == peer->ksnp_id.nid) &&
 				      (id.pid == LNET_PID_ANY ||
-				       id.pid == peer->ksnp_id.pid))) {
-					peer = NULL;
+				       id.pid == peer->ksnp_id.pid)))
 					continue;
-				}
 
-				if (index++ == j) {
+				if (i++ == peer_off) {
 					ksocknal_peer_addref(peer);
 					break;
 				}
 			}
-
 			read_unlock(&ksocknal_data.ksnd_global_lock);
 
-			if (peer != NULL) {
-				rc = 0;
-				ksocknal_push_peer(peer);
-				ksocknal_peer_decref(peer);
-			}
+			if (i == 0) /* no match */
+				break;
+
+			rc = 0;
+			ksocknal_push_peer(peer);
+			ksocknal_peer_decref(peer);
 		}
-
 	}
-
 	return rc;
 }
 
@@ -2261,9 +2259,8 @@ ksocknal_base_shutdown(void)
 	case SOCKNAL_INIT_ALL:
 	case SOCKNAL_INIT_DATA:
 		LASSERT(ksocknal_data.ksnd_peers != NULL);
-		for (i = 0; i < ksocknal_data.ksnd_peer_hash_size; i++) {
+		for (i = 0; i < ksocknal_data.ksnd_peer_hash_size; i++)
 			LASSERT(list_empty(&ksocknal_data.ksnd_peers[i]));
-		}
 
 		LASSERT(list_empty(&ksocknal_data.ksnd_nets));
 		LASSERT(list_empty(&ksocknal_data.ksnd_enomem_conns));
@@ -2427,7 +2424,7 @@ ksocknal_base_startup(void)
 
 	ksocknal_data.ksnd_connd_starting       = 0;
 	ksocknal_data.ksnd_connd_failed_stamp   = 0;
-	ksocknal_data.ksnd_connd_starting_stamp = get_seconds();
+	ksocknal_data.ksnd_connd_starting_stamp = ktime_get_real_seconds();
 	/* must have at least 2 connds to remain responsive to accepts while
 	 * connecting */
 	if (*ksocknal_tunables.ksnd_nconnds < SOCKNAL_CONND_RESV + 1)
@@ -2441,10 +2438,10 @@ ksocknal_base_startup(void)
 
 	for (i = 0; i < *ksocknal_tunables.ksnd_nconnds; i++) {
 		char name[16];
+
 		spin_lock_bh(&ksocknal_data.ksnd_connd_lock);
 		ksocknal_data.ksnd_connd_starting++;
 		spin_unlock_bh(&ksocknal_data.ksnd_connd_lock);
-
 
 		snprintf(name, sizeof(name), "socknal_cd%02d", i);
 		rc = ksocknal_thread_start(ksocknal_connd,
@@ -2624,8 +2621,8 @@ ksocknal_enumerate_interfaces(ksock_net_t *net)
 
 		net->ksnn_interfaces[j].ksni_ipaddr = ip;
 		net->ksnn_interfaces[j].ksni_netmask = mask;
-		strncpy(&net->ksnn_interfaces[j].ksni_name[0],
-			names[i], IFNAMSIZ);
+		strlcpy(net->ksnn_interfaces[j].ksni_name,
+			names[i], sizeof(net->ksnn_interfaces[j].ksni_name));
 		j++;
 	}
 
@@ -2706,6 +2703,7 @@ ksocknal_start_schedulers(struct ksock_sched_info *info)
 		long id;
 		char name[20];
 		ksock_sched_t *sched;
+
 		id = KSOCK_THREAD_ID(info->ksi_cpt, info->ksi_nthreads + i);
 		sched = &info->ksi_scheds[KSOCK_THREAD_SID(id)];
 		snprintf(name, sizeof(name), "socknal_sd%02d_%02d",
@@ -2807,8 +2805,9 @@ ksocknal_startup(lnet_ni_t *ni)
 				goto fail_1;
 			}
 
-			strncpy(&net->ksnn_interfaces[i].ksni_name[0],
-				ni->ni_interfaces[i], IFNAMSIZ);
+			strlcpy(net->ksnn_interfaces[i].ksni_name,
+				ni->ni_interfaces[i],
+				sizeof(net->ksnn_interfaces[i].ksni_name));
 		}
 		net->ksnn_ninterfaces = i;
 	}
@@ -2834,7 +2833,6 @@ ksocknal_startup(lnet_ni_t *ni)
 
 	return -ENETDOWN;
 }
-
 
 static void __exit
 ksocknal_module_fini(void)
@@ -2871,7 +2869,7 @@ ksocknal_module_init(void)
 	return 0;
 }
 
-MODULE_AUTHOR("Sun Microsystems, Inc. <http://www.lustre.org/>");
+MODULE_AUTHOR("OpenSFS, Inc. <http://www.lustre.org/>");
 MODULE_DESCRIPTION("Kernel TCP Socket LND v3.0.0");
 MODULE_LICENSE("GPL");
 MODULE_VERSION("3.0.0");

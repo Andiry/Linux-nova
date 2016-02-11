@@ -443,7 +443,6 @@ LIST_HEAD(perf_hpp__sort_list);
 
 void perf_hpp__init(void)
 {
-	struct list_head *list;
 	int i;
 
 	for (i = 0; i < PERF_HPP__MAX_INDEX; i++) {
@@ -463,38 +462,27 @@ void perf_hpp__init(void)
 		return;
 
 	if (symbol_conf.cumulate_callchain) {
-		perf_hpp__column_enable(PERF_HPP__OVERHEAD_ACC);
+		hpp_dimension__add_output(PERF_HPP__OVERHEAD_ACC);
 		perf_hpp__format[PERF_HPP__OVERHEAD].name = "Self";
 	}
 
-	perf_hpp__column_enable(PERF_HPP__OVERHEAD);
+	hpp_dimension__add_output(PERF_HPP__OVERHEAD);
 
 	if (symbol_conf.show_cpu_utilization) {
-		perf_hpp__column_enable(PERF_HPP__OVERHEAD_SYS);
-		perf_hpp__column_enable(PERF_HPP__OVERHEAD_US);
+		hpp_dimension__add_output(PERF_HPP__OVERHEAD_SYS);
+		hpp_dimension__add_output(PERF_HPP__OVERHEAD_US);
 
 		if (perf_guest) {
-			perf_hpp__column_enable(PERF_HPP__OVERHEAD_GUEST_SYS);
-			perf_hpp__column_enable(PERF_HPP__OVERHEAD_GUEST_US);
+			hpp_dimension__add_output(PERF_HPP__OVERHEAD_GUEST_SYS);
+			hpp_dimension__add_output(PERF_HPP__OVERHEAD_GUEST_US);
 		}
 	}
 
 	if (symbol_conf.show_nr_samples)
-		perf_hpp__column_enable(PERF_HPP__SAMPLES);
+		hpp_dimension__add_output(PERF_HPP__SAMPLES);
 
 	if (symbol_conf.show_total_period)
-		perf_hpp__column_enable(PERF_HPP__PERIOD);
-
-	/* prepend overhead field for backward compatiblity.  */
-	list = &perf_hpp__format[PERF_HPP__OVERHEAD].sort_list;
-	if (list_empty(list))
-		list_add(list, &perf_hpp__sort_list);
-
-	if (symbol_conf.cumulate_callchain) {
-		list = &perf_hpp__format[PERF_HPP__OVERHEAD_ACC].sort_list;
-		if (list_empty(list))
-			list_add(list, &perf_hpp__sort_list);
-	}
+		hpp_dimension__add_output(PERF_HPP__PERIOD);
 }
 
 void perf_hpp__column_register(struct perf_hpp_fmt *format)
@@ -619,7 +607,7 @@ unsigned int hists__sort_list_width(struct hists *hists)
 	struct perf_hpp dummy_hpp;
 
 	perf_hpp__for_each_format(fmt) {
-		if (perf_hpp__should_skip(fmt))
+		if (perf_hpp__should_skip(fmt, hists))
 			continue;
 
 		if (first)

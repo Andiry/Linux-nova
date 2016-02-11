@@ -12,7 +12,7 @@
 
 #include <linux/io.h>
 #include <linux/clk.h>
-#include <linux/gpio.h>
+#include <linux/gpio/driver.h>
 #include <linux/irqdomain.h>
 #include <linux/irqchip/chained_irq.h>
 #include <linux/module.h>
@@ -446,16 +446,6 @@ static const struct pinmux_ops sunxi_pmx_ops = {
 	.gpio_set_direction	= sunxi_pmx_gpio_set_direction,
 };
 
-static int sunxi_pinctrl_gpio_request(struct gpio_chip *chip, unsigned offset)
-{
-	return pinctrl_request_gpio(chip->base + offset);
-}
-
-static void sunxi_pinctrl_gpio_free(struct gpio_chip *chip, unsigned offset)
-{
-	pinctrl_free_gpio(chip->base + offset);
-}
-
 static int sunxi_pinctrl_gpio_direction_input(struct gpio_chip *chip,
 					unsigned offset)
 {
@@ -464,7 +454,7 @@ static int sunxi_pinctrl_gpio_direction_input(struct gpio_chip *chip,
 
 static int sunxi_pinctrl_gpio_get(struct gpio_chip *chip, unsigned offset)
 {
-	struct sunxi_pinctrl *pctl = dev_get_drvdata(chip->dev);
+	struct sunxi_pinctrl *pctl = gpiochip_get_data(chip);
 	u32 reg = sunxi_data_reg(offset);
 	u8 index = sunxi_data_offset(offset);
 	u32 set_mux = pctl->desc->irq_read_needs_mux &&
@@ -479,13 +469,13 @@ static int sunxi_pinctrl_gpio_get(struct gpio_chip *chip, unsigned offset)
 	if (set_mux)
 		sunxi_pmx_set(pctl->pctl_dev, offset, SUN4I_FUNC_IRQ);
 
-	return val;
+	return !!val;
 }
 
 static void sunxi_pinctrl_gpio_set(struct gpio_chip *chip,
 				unsigned offset, int value)
 {
-	struct sunxi_pinctrl *pctl = dev_get_drvdata(chip->dev);
+	struct sunxi_pinctrl *pctl = gpiochip_get_data(chip);
 	u32 reg = sunxi_data_reg(offset);
 	u8 index = sunxi_data_offset(offset);
 	unsigned long flags;
@@ -532,7 +522,7 @@ static int sunxi_pinctrl_gpio_of_xlate(struct gpio_chip *gc,
 
 static int sunxi_pinctrl_gpio_to_irq(struct gpio_chip *chip, unsigned offset)
 {
-	struct sunxi_pinctrl *pctl = dev_get_drvdata(chip->dev);
+	struct sunxi_pinctrl *pctl = gpiochip_get_data(chip);
 	struct sunxi_desc_function *desc;
 	unsigned pinnum = pctl->desc->pin_base + offset;
 	unsigned irqnum;
@@ -546,7 +536,7 @@ static int sunxi_pinctrl_gpio_to_irq(struct gpio_chip *chip, unsigned offset)
 
 	irqnum = desc->irqbank * IRQ_PER_BANK + desc->irqnum;
 
-	dev_dbg(chip->dev, "%s: request IRQ for GPIO %d, return %d\n",
+	dev_dbg(chip->parent, "%s: request IRQ for GPIO %d, return %d\n",
 		chip->label, offset + chip->base, irqnum);
 
 	return irq_find_mapping(pctl->domain, irqnum);
@@ -716,6 +706,7 @@ static int sunxi_pinctrl_irq_of_xlate(struct irq_domain *d,
 				      unsigned long *out_hwirq,
 				      unsigned int *out_type)
 {
+	struct sunxi_pinctrl *pctl = d->host_data;
 	struct sunxi_desc_function *desc;
 	int pin, base;
 
@@ -723,10 +714,9 @@ static int sunxi_pinctrl_irq_of_xlate(struct irq_domain *d,
 		return -EINVAL;
 
 	base = PINS_PER_BANK * intspec[0];
-	pin = base + intspec[1];
+	pin = pctl->desc->pin_base + base + intspec[1];
 
-	desc = sunxi_pinctrl_desc_find_function_by_pin(d->host_data,
-						       pin, "irq");
+	desc = sunxi_pinctrl_desc_find_function_by_pin(pctl, pin, "irq");
 	if (!desc)
 		return -EINVAL;
 
@@ -956,8 +946,8 @@ int sunxi_pinctrl_init(struct platform_device *pdev,
 
 	last_pin = pctl->desc->pins[pctl->desc->npins - 1].pin.number;
 	pctl->chip->owner = THIS_MODULE;
-	pctl->chip->request = sunxi_pinctrl_gpio_request,
-	pctl->chip->free = sunxi_pinctrl_gpio_free,
+	pctl->chip->request = gpiochip_generic_request,
+	pctl->chip->free = gpiochip_generic_free,
 	pctl->chip->direction_input = sunxi_pinctrl_gpio_direction_input,
 	pctl->chip->direction_output = sunxi_pinctrl_gpio_direction_output,
 	pctl->chip->get = sunxi_pinctrl_gpio_get,
@@ -969,10 +959,10 @@ int sunxi_pinctrl_init(struct platform_device *pdev,
 	pctl->chip->ngpio = round_up(last_pin, PINS_PER_BANK) -
 			    pctl->desc->pin_base;
 	pctl->chip->label = dev_name(&pdev->dev);
-	pctl->chip->dev = &pdev->dev;
+	pctl->chip->parent = &pdev->dev;
 	pctl->chip->base = pctl->desc->pin_base;
 
-	ret = gpiochip_add(pctl->chip);
+	ret = gpiochip_add_data(pctl->chip, pctl);
 	if (ret)
 		goto pinctrl_error;
 
@@ -1029,7 +1019,7 @@ int sunxi_pinctrl_init(struct platform_device *pdev,
 		irq_set_chip_and_handler(irqno, &sunxi_pinctrl_edge_irq_chip,
 					 handle_edge_irq);
 		irq_set_chip_data(irqno, pctl);
-	};
+	}
 
 	for (i = 0; i < pctl->desc->irq_banks; i++) {
 		/* Mask and clear all IRQs before registering a handler */

@@ -257,6 +257,7 @@
 #define USB_PID_TERRATEC_CINERGY_T_XXS_2		0x00ab
 #define USB_PID_TERRATEC_H7				0x10b4
 #define USB_PID_TERRATEC_H7_2				0x10a3
+#define USB_PID_TERRATEC_H7_3				0x10a5
 #define USB_PID_TERRATEC_T3				0x10a0
 #define USB_PID_TERRATEC_T5				0x10a1
 #define USB_PID_NOXON_DAB_STICK				0x00b3
@@ -388,4 +389,5 @@
 #define USB_PID_PCTV_2002E_SE                           0x025d
 #define USB_PID_SVEON_STV27                             0xd3af
 #define USB_PID_TURBOX_DTT_2000                         0xd3a4
+#define USB_PID_WINTV_SOLOHD                            0x0264
 #endif

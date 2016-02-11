@@ -119,20 +119,20 @@ int of_get_named_gpio_flags(struct device_node *np, const char *list_name,
 EXPORT_SYMBOL(of_get_named_gpio_flags);
 
 /**
- * of_get_gpio_hog() - Get a GPIO hog descriptor, names and flags for GPIO API
+ * of_parse_own_gpio() - Get a GPIO hog descriptor, names and flags for GPIO API
  * @np:		device node to get GPIO from
  * @name:	GPIO line name
  * @lflags:	gpio_lookup_flags - returned from of_find_gpio() or
- *		of_get_gpio_hog()
+ *		of_parse_own_gpio()
  * @dflags:	gpiod_flags - optional GPIO initialization flags
  *
  * Returns GPIO descriptor to use with Linux GPIO API, or one of the errno
  * value on the error condition.
  */
-static struct gpio_desc *of_get_gpio_hog(struct device_node *np,
-				  const char **name,
-				  enum gpio_lookup_flags *lflags,
-				  enum gpiod_flags *dflags)
+static struct gpio_desc *of_parse_own_gpio(struct device_node *np,
+					   const char **name,
+					   enum gpio_lookup_flags *lflags,
+					   enum gpiod_flags *dflags)
 {
 	struct device_node *chip_np;
 	enum of_gpio_flags xlate_flags;
@@ -196,13 +196,13 @@ static struct gpio_desc *of_get_gpio_hog(struct device_node *np,
 }
 
 /**
- * of_gpiochip_scan_hogs - Scan gpio-controller and apply GPIO hog as requested
+ * of_gpiochip_scan_gpios - Scan gpio-controller for gpio definitions
  * @chip:	gpio chip to act on
  *
  * This is only used by of_gpiochip_add to request/set GPIO initial
  * configuration.
  */
-static void of_gpiochip_scan_hogs(struct gpio_chip *chip)
+static void of_gpiochip_scan_gpios(struct gpio_chip *chip)
 {
 	struct gpio_desc *desc = NULL;
 	struct device_node *np;
@@ -214,7 +214,7 @@ static void of_gpiochip_scan_hogs(struct gpio_chip *chip)
 		if (!of_property_read_bool(np, "gpio-hog"))
 			continue;
 
-		desc = of_get_gpio_hog(np, &name, &lflags, &dflags);
+		desc = of_parse_own_gpio(np, &name, &lflags, &dflags);
 		if (IS_ERR(desc))
 			continue;
 
@@ -262,9 +262,10 @@ int of_gpio_simple_xlate(struct gpio_chip *gc,
 EXPORT_SYMBOL(of_gpio_simple_xlate);
 
 /**
- * of_mm_gpiochip_add - Add memory mapped GPIO chip (bank)
+ * of_mm_gpiochip_add_data - Add memory mapped GPIO chip (bank)
  * @np:		device node of the GPIO chip
  * @mm_gc:	pointer to the of_mm_gpio_chip allocated structure
+ * @data:	driver data to store in the struct gpio_chip
  *
  * To use this function you should allocate and fill mm_gc with:
  *
@@ -280,8 +281,9 @@ EXPORT_SYMBOL(of_gpio_simple_xlate);
  * do all necessary work for you. Then you'll able to use .regs
  * to manage GPIOs from the callbacks.
  */
-int of_mm_gpiochip_add(struct device_node *np,
-		       struct of_mm_gpio_chip *mm_gc)
+int of_mm_gpiochip_add_data(struct device_node *np,
+			    struct of_mm_gpio_chip *mm_gc,
+			    void *data)
 {
 	int ret = -ENOMEM;
 	struct gpio_chip *gc = &mm_gc->gc;
@@ -301,7 +303,7 @@ int of_mm_gpiochip_add(struct device_node *np,
 
 	mm_gc->gc.of_node = np;
 
-	ret = gpiochip_add(gc);
+	ret = gpiochip_add_data(gc, data);
 	if (ret)
 		goto err2;
 
@@ -315,7 +317,7 @@ err0:
 	       np->full_name, ret);
 	return ret;
 }
-EXPORT_SYMBOL(of_mm_gpiochip_add);
+EXPORT_SYMBOL(of_mm_gpiochip_add_data);
 
 /**
  * of_mm_gpiochip_remove - Remove memory mapped GPIO chip (bank)
@@ -423,8 +425,8 @@ int of_gpiochip_add(struct gpio_chip *chip)
 {
 	int status;
 
-	if ((!chip->of_node) && (chip->dev))
-		chip->of_node = chip->dev->of_node;
+	if ((!chip->of_node) && (chip->parent))
+		chip->of_node = chip->parent->of_node;
 
 	if (!chip->of_node)
 		return 0;
@@ -440,7 +442,7 @@ int of_gpiochip_add(struct gpio_chip *chip)
 
 	of_node_get(chip->of_node);
 
-	of_gpiochip_scan_hogs(chip);
+	of_gpiochip_scan_gpios(chip);
 
 	return 0;
 }

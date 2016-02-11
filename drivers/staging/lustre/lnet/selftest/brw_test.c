@@ -27,7 +27,7 @@
  * Copyright (c) 2007, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
  *
- * Copyright (c) 2011, 2012, Intel Corporation.
+ * Copyright (c) 2011, 2015, Intel Corporation.
  */
 /*
  * This file is part of Lustre, http://www.lustre.org/
@@ -134,14 +134,14 @@ brw_client_init(sfw_test_instance_t *tsi)
 static int
 brw_inject_one_error(void)
 {
-	struct timeval tv;
+	struct timespec64 ts;
 
 	if (brw_inject_errors <= 0)
 		return 0;
 
-	do_gettimeofday(&tv);
+	ktime_get_ts64(&ts);
 
-	if ((tv.tv_usec & 1) == 0)
+	if (((ts.tv_nsec / NSEC_PER_USEC) & 1) == 0)
 		return 0;
 
 	return brw_inject_errors--;
@@ -358,7 +358,7 @@ out:
 }
 
 static void
-brw_server_rpc_done(srpc_server_rpc_t *rpc)
+brw_server_rpc_done(struct srpc_server_rpc *rpc)
 {
 	srpc_bulk_t *blk = rpc->srpc_bulk;
 
@@ -378,7 +378,7 @@ brw_server_rpc_done(srpc_server_rpc_t *rpc)
 }
 
 static int
-brw_bulk_ready(srpc_server_rpc_t *rpc, int status)
+brw_bulk_ready(struct srpc_server_rpc *rpc, int status)
 {
 	__u64 magic = BRW_MAGIC;
 	srpc_brw_reply_t *reply = &rpc->srpc_replymsg.msg_body.brw_reply;

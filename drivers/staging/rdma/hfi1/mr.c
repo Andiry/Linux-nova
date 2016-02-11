@@ -167,10 +167,7 @@ static struct hfi1_mr *alloc_mr(int count, struct ib_pd *pd)
 	rval = init_mregion(&mr->mr, pd, count);
 	if (rval)
 		goto bail;
-	/*
-	 * ib_reg_phys_mr() will initialize mr->ibmr except for
-	 * lkey and rkey.
-	 */
+
 	rval = hfi1_alloc_lkey(&mr->mr, 0);
 	if (rval)
 		goto bail_mregion;
@@ -185,52 +182,6 @@ bail:
 	kfree(mr);
 	mr = ERR_PTR(rval);
 	goto done;
-}
-
-/**
- * hfi1_reg_phys_mr - register a physical memory region
- * @pd: protection domain for this memory region
- * @buffer_list: pointer to the list of physical buffers to register
- * @num_phys_buf: the number of physical buffers to register
- * @iova_start: the starting address passed over IB which maps to this MR
- *
- * Returns the memory region on success, otherwise returns an errno.
- */
-struct ib_mr *hfi1_reg_phys_mr(struct ib_pd *pd,
-			       struct ib_phys_buf *buffer_list,
-			       int num_phys_buf, int acc, u64 *iova_start)
-{
-	struct hfi1_mr *mr;
-	int n, m, i;
-	struct ib_mr *ret;
-
-	mr = alloc_mr(num_phys_buf, pd);
-	if (IS_ERR(mr)) {
-		ret = (struct ib_mr *)mr;
-		goto bail;
-	}
-
-	mr->mr.user_base = *iova_start;
-	mr->mr.iova = *iova_start;
-	mr->mr.access_flags = acc;
-
-	m = 0;
-	n = 0;
-	for (i = 0; i < num_phys_buf; i++) {
-		mr->mr.map[m]->segs[n].vaddr = (void *) buffer_list[i].addr;
-		mr->mr.map[m]->segs[n].length = buffer_list[i].size;
-		mr->mr.length += buffer_list[i].size;
-		n++;
-		if (n == HFI1_SEGSZ) {
-			m++;
-			n = 0;
-		}
-	}
-
-	ret = &mr->ibmr;
-
-bail:
-	return ret;
 }
 
 /**
@@ -284,20 +235,20 @@ struct ib_mr *hfi1_reg_user_mr(struct ib_pd *pd, u64 start, u64 length,
 	m = 0;
 	n = 0;
 	for_each_sg(umem->sg_head.sgl, sg, umem->nmap, entry) {
-			void *vaddr;
+		void *vaddr;
 
-			vaddr = page_address(sg_page(sg));
-			if (!vaddr) {
-				ret = ERR_PTR(-EINVAL);
-				goto bail;
-			}
-			mr->mr.map[m]->segs[n].vaddr = vaddr;
-			mr->mr.map[m]->segs[n].length = umem->page_size;
-			n++;
-			if (n == HFI1_SEGSZ) {
-				m++;
-				n = 0;
-			}
+		vaddr = page_address(sg_page(sg));
+		if (!vaddr) {
+			ret = ERR_PTR(-EINVAL);
+			goto bail;
+		}
+		mr->mr.map[m]->segs[n].vaddr = vaddr;
+		mr->mr.map[m]->segs[n].length = umem->page_size;
+		n++;
+		if (n == HFI1_SEGSZ) {
+			m++;
+			n = 0;
+		}
 	}
 	ret = &mr->ibmr;
 
@@ -344,9 +295,10 @@ out:
 
 /*
  * Allocate a memory region usable with the
- * IB_WR_FAST_REG_MR send work request.
+ * IB_WR_REG_MR send work request.
  *
  * Return the memory region on success, otherwise return an errno.
+ * FIXME: IB_WR_REG_MR is not supported
  */
 struct ib_mr *hfi1_alloc_mr(struct ib_pd *pd,
 			    enum ib_mr_type mr_type,
@@ -362,36 +314,6 @@ struct ib_mr *hfi1_alloc_mr(struct ib_pd *pd,
 		return (struct ib_mr *)mr;
 
 	return &mr->ibmr;
-}
-
-struct ib_fast_reg_page_list *
-hfi1_alloc_fast_reg_page_list(struct ib_device *ibdev, int page_list_len)
-{
-	unsigned size = page_list_len * sizeof(u64);
-	struct ib_fast_reg_page_list *pl;
-
-	if (size > PAGE_SIZE)
-		return ERR_PTR(-EINVAL);
-
-	pl = kzalloc(sizeof(*pl), GFP_KERNEL);
-	if (!pl)
-		return ERR_PTR(-ENOMEM);
-
-	pl->page_list = kzalloc(size, GFP_KERNEL);
-	if (!pl->page_list)
-		goto err_free;
-
-	return pl;
-
-err_free:
-	kfree(pl);
-	return ERR_PTR(-ENOMEM);
-}
-
-void hfi1_free_fast_reg_page_list(struct ib_fast_reg_page_list *pl)
-{
-	kfree(pl->page_list);
-	kfree(pl);
 }
 
 /**

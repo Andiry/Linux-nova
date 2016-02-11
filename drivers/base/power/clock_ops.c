@@ -15,9 +15,10 @@
 #include <linux/clkdev.h>
 #include <linux/slab.h>
 #include <linux/err.h>
+#include <linux/pm_domain.h>
 #include <linux/pm_runtime.h>
 
-#ifdef CONFIG_PM
+#ifdef CONFIG_PM_CLK
 
 enum pce_status {
 	PCE_STATUS_NONE = 0,
@@ -93,7 +94,7 @@ static int __pm_clk_add(struct device *dev, const char *con_id,
 			return -ENOMEM;
 		}
 	} else {
-		if (IS_ERR(clk) || !__clk_get(clk)) {
+		if (IS_ERR(clk)) {
 			kfree(ce);
 			return -ENOENT;
 		}
@@ -127,7 +128,9 @@ int pm_clk_add(struct device *dev, const char *con_id)
  * @clk: Clock pointer
  *
  * Add the clock to the list of clocks used for the power management of @dev.
- * It will increment refcount on clock pointer, use clk_put() on it when done.
+ * The power-management code will take control of the clock reference, so
+ * callers should not call clk_put() on @clk after this function sucessfully
+ * returned.
  */
 int pm_clk_add_clk(struct device *dev, struct clk *clk)
 {
@@ -346,7 +349,7 @@ static int pm_clk_notify(struct notifier_block *nb,
 		if (error)
 			break;
 
-		dev->pm_domain = clknb->pm_domain;
+		dev_pm_domain_set(dev, clknb->pm_domain);
 		if (clknb->con_ids[0]) {
 			for (con_id = clknb->con_ids; *con_id; con_id++)
 				pm_clk_add(dev, *con_id);
@@ -359,7 +362,7 @@ static int pm_clk_notify(struct notifier_block *nb,
 		if (dev->pm_domain != clknb->pm_domain)
 			break;
 
-		dev->pm_domain = NULL;
+		dev_pm_domain_set(dev, NULL);
 		pm_clk_destroy(dev);
 		break;
 	}
@@ -404,7 +407,7 @@ int pm_clk_runtime_resume(struct device *dev)
 	return pm_generic_runtime_resume(dev);
 }
 
-#else /* !CONFIG_PM */
+#else /* !CONFIG_PM_CLK */
 
 /**
  * enable_clock - Enable a device clock.
@@ -471,6 +474,7 @@ static int pm_clk_notify(struct notifier_block *nb,
 			enable_clock(dev, NULL);
 		}
 		break;
+	case BUS_NOTIFY_DRIVER_NOT_BOUND:
 	case BUS_NOTIFY_UNBOUND_DRIVER:
 		if (clknb->con_ids[0]) {
 			for (con_id = clknb->con_ids; *con_id; con_id++)
@@ -484,7 +488,7 @@ static int pm_clk_notify(struct notifier_block *nb,
 	return 0;
 }
 
-#endif /* !CONFIG_PM */
+#endif /* !CONFIG_PM_CLK */
 
 /**
  * pm_clk_add_notifier - Add bus type notifier for power management clocks.

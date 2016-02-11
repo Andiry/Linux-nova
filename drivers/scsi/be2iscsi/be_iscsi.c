@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2005 - 2015 Avago Technologies
+ * Copyright (C) 2005 - 2015 Emulex
  * All rights reserved.
  *
  * This program is free software; you can redistribute it and/or
@@ -12,7 +12,7 @@
  * Contact Information:
  * linux-drivers@avagotech.com
  *
- * Avago Technologies
+ * Emulex
  * 3333 Susan Street
  * Costa Mesa, CA 92626
  */
@@ -1292,9 +1292,9 @@ static void beiscsi_flush_cq(struct beiscsi_hba *phba)
 
 	for (i = 0; i < phba->num_cpus; i++) {
 		pbe_eq = &phwi_context->be_eq[i];
-		blk_iopoll_disable(&pbe_eq->iopoll);
+		irq_poll_disable(&pbe_eq->iopoll);
 		beiscsi_process_cq(pbe_eq);
-		blk_iopoll_enable(&pbe_eq->iopoll);
+		irq_poll_enable(&pbe_eq->iopoll);
 	}
 }
 

@@ -27,7 +27,7 @@
  * Copyright (c) 2002, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
  *
- * Copyright (c) 2011, 2012, Intel Corporation.
+ * Copyright (c) 2011, 2015, Intel Corporation.
  */
 /*
  * This file is part of Lustre, http://www.lustre.org/
@@ -343,7 +343,6 @@ static int ll_revalidate_nd(struct dentry *dentry, unsigned int flags)
 
 	return ll_revalidate_dentry(dentry, flags);
 }
-
 
 static void ll_d_iput(struct dentry *de, struct inode *inode)
 {

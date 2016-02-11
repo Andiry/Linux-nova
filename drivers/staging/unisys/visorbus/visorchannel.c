@@ -41,8 +41,8 @@ struct visorchannel {
 	struct channel_header chan_hdr;
 	uuid_le guid;
 	ulong size;
-	bool needs_lock;	/* channel creator knows if more than one
-				 * thread will be inserting or removing */
+	bool needs_lock;	/* channel creator knows if more than one */
+				/* thread will be inserting or removing */
 	spinlock_t insert_lock; /* protect head writes in chan_hdr */
 	spinlock_t remove_lock;	/* protect tail writes in chan_hdr */
 
@@ -279,7 +279,7 @@ visorchannel_clear(struct visorchannel *channel, ulong offset, u8 ch,
 	int written = 0;
 	u8 *buf;
 
-	buf = (u8 *) __get_free_page(GFP_KERNEL);
+	buf = (u8 *)__get_free_page(GFP_KERNEL);
 	if (!buf)
 		return -ENOMEM;
 
@@ -301,7 +301,7 @@ visorchannel_clear(struct visorchannel *channel, ulong offset, u8 ch,
 	err = 0;
 
 cleanup:
-	free_page((unsigned long) buf);
+	free_page((unsigned long)buf);
 	return err;
 }
 EXPORT_SYMBOL_GPL(visorchannel_clear);
@@ -332,7 +332,7 @@ EXPORT_SYMBOL_GPL(visorchannel_get_header);
  */
 #define SIG_WRITE_FIELD(channel, queue, sig_hdr, FIELD)			 \
 	(visorchannel_write(channel,					 \
-			    SIG_QUEUE_OFFSET(&channel->chan_hdr, queue)+ \
+			    SIG_QUEUE_OFFSET(&channel->chan_hdr, queue) +\
 			    offsetof(struct signal_queue_header, FIELD), \
 			    &((sig_hdr)->FIELD),			 \
 			    sizeof((sig_hdr)->FIELD)) >= 0)
@@ -468,7 +468,7 @@ signalinsert_inner(struct visorchannel *channel, u32 queue, void *msg)
 				   SIG_QUEUE_OFFSET(&channel->chan_hdr, queue) +
 				   offsetof(struct signal_queue_header,
 					    num_overflows),
-				   &(sig_hdr.num_overflows),
+				   &sig_hdr.num_overflows,
 				   sizeof(sig_hdr.num_overflows));
 		return false;
 	}

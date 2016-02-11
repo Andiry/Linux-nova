@@ -848,6 +848,7 @@ static void free_arg(struct print_arg *arg)
 		free(arg->bitmask.bitmask);
 		break;
 	case PRINT_DYNAMIC_ARRAY:
+	case PRINT_DYNAMIC_ARRAY_LEN:
 		free(arg->dynarray.index);
 		break;
 	case PRINT_OP:
@@ -2729,6 +2730,42 @@ process_dynamic_array(struct event_format *event, struct print_arg *arg, char **
 }
 
 static enum event_type
+process_dynamic_array_len(struct event_format *event, struct print_arg *arg,
+			  char **tok)
+{
+	struct format_field *field;
+	enum event_type type;
+	char *token;
+
+	if (read_expect_type(EVENT_ITEM, &token) < 0)
+		goto out_free;
+
+	arg->type = PRINT_DYNAMIC_ARRAY_LEN;
+
+	/* Find the field */
+	field = pevent_find_field(event, token);
+	if (!field)
+		goto out_free;
+
+	arg->dynarray.field = field;
+	arg->dynarray.index = 0;
+
+	if (read_expected(EVENT_DELIM, ")") < 0)
+		goto out_err;
+
+	type = read_token(&token);
+	*tok = token;
+
+	return type;
+
+ out_free:
+	free_token(token);
+ out_err:
+	*tok = NULL;
+	return EVENT_ERROR;
+}
+
+static enum event_type
 process_paren(struct event_format *event, struct print_arg *arg, char **tok)
 {
 	struct print_arg *item_arg;
@@ -2974,6 +3011,10 @@ process_function(struct event_format *event, struct print_arg *arg,
 	if (strcmp(token, "__get_dynamic_array") == 0) {
 		free_token(token);
 		return process_dynamic_array(event, arg, tok);
+	}
+	if (strcmp(token, "__get_dynamic_array_len") == 0) {
+		free_token(token);
+		return process_dynamic_array_len(event, arg, tok);
 	}
 
 	func = find_func_handler(event->pevent, token);
@@ -3655,14 +3696,25 @@ eval_num_arg(void *data, int size, struct event_format *event, struct print_arg 
 			goto out_warning_op;
 		}
 		break;
+	case PRINT_DYNAMIC_ARRAY_LEN:
+		offset = pevent_read_number(pevent,
+					    data + arg->dynarray.field->offset,
+					    arg->dynarray.field->size);
+		/*
+		 * The total allocated length of the dynamic array is
+		 * stored in the top half of the field, and the offset
+		 * is in the bottom half of the 32 bit field.
+		 */
+		val = (unsigned long long)(offset >> 16);
+		break;
 	case PRINT_DYNAMIC_ARRAY:
 		/* Without [], we pass the address to the dynamic data */
 		offset = pevent_read_number(pevent,
 					    data + arg->dynarray.field->offset,
 					    arg->dynarray.field->size);
 		/*
-		 * The actual length of the dynamic array is stored
-		 * in the top half of the field, and the offset
+		 * The total allocated length of the dynamic array is
+		 * stored in the top half of the field, and the offset
 		 * is in the bottom half of the 32 bit field.
 		 */
 		offset &= 0xffff;
@@ -3694,7 +3746,7 @@ static const struct flag flags[] = {
 	{ "NET_TX_SOFTIRQ", 2 },
 	{ "NET_RX_SOFTIRQ", 3 },
 	{ "BLOCK_SOFTIRQ", 4 },
-	{ "BLOCK_IOPOLL_SOFTIRQ", 5 },
+	{ "IRQ_POLL_SOFTIRQ", 5 },
 	{ "TASKLET_SOFTIRQ", 6 },
 	{ "SCHED_SOFTIRQ", 7 },
 	{ "HRTIMER_SOFTIRQ", 8 },
@@ -4683,73 +4735,80 @@ static int is_printable_array(char *p, unsigned int len)
 	return 1;
 }
 
-static void print_event_fields(struct trace_seq *s, void *data,
-			       int size __maybe_unused,
-			       struct event_format *event)
+void pevent_print_field(struct trace_seq *s, void *data,
+			struct format_field *field)
 {
-	struct format_field *field;
 	unsigned long long val;
 	unsigned int offset, len, i;
+	struct pevent *pevent = field->event->pevent;
+
+	if (field->flags & FIELD_IS_ARRAY) {
+		offset = field->offset;
+		len = field->size;
+		if (field->flags & FIELD_IS_DYNAMIC) {
+			val = pevent_read_number(pevent, data + offset, len);
+			offset = val;
+			len = offset >> 16;
+			offset &= 0xffff;
+		}
+		if (field->flags & FIELD_IS_STRING &&
+		    is_printable_array(data + offset, len)) {
+			trace_seq_printf(s, "%s", (char *)data + offset);
+		} else {
+			trace_seq_puts(s, "ARRAY[");
+			for (i = 0; i < len; i++) {
+				if (i)
+					trace_seq_puts(s, ", ");
+				trace_seq_printf(s, "%02x",
+						 *((unsigned char *)data + offset + i));
+			}
+			trace_seq_putc(s, ']');
+			field->flags &= ~FIELD_IS_STRING;
+		}
+	} else {
+		val = pevent_read_number(pevent, data + field->offset,
+					 field->size);
+		if (field->flags & FIELD_IS_POINTER) {
+			trace_seq_printf(s, "0x%llx", val);
+		} else if (field->flags & FIELD_IS_SIGNED) {
+			switch (field->size) {
+			case 4:
+				/*
+				 * If field is long then print it in hex.
+				 * A long usually stores pointers.
+				 */
+				if (field->flags & FIELD_IS_LONG)
+					trace_seq_printf(s, "0x%x", (int)val);
+				else
+					trace_seq_printf(s, "%d", (int)val);
+				break;
+			case 2:
+				trace_seq_printf(s, "%2d", (short)val);
+				break;
+			case 1:
+				trace_seq_printf(s, "%1d", (char)val);
+				break;
+			default:
+				trace_seq_printf(s, "%lld", val);
+			}
+		} else {
+			if (field->flags & FIELD_IS_LONG)
+				trace_seq_printf(s, "0x%llx", val);
+			else
+				trace_seq_printf(s, "%llu", val);
+		}
+	}
+}
+
+void pevent_print_fields(struct trace_seq *s, void *data,
+			 int size __maybe_unused, struct event_format *event)
+{
+	struct format_field *field;
 
 	field = event->format.fields;
 	while (field) {
 		trace_seq_printf(s, " %s=", field->name);
-		if (field->flags & FIELD_IS_ARRAY) {
-			offset = field->offset;
-			len = field->size;
-			if (field->flags & FIELD_IS_DYNAMIC) {
-				val = pevent_read_number(event->pevent, data + offset, len);
-				offset = val;
-				len = offset >> 16;
-				offset &= 0xffff;
-			}
-			if (field->flags & FIELD_IS_STRING &&
-			    is_printable_array(data + offset, len)) {
-				trace_seq_printf(s, "%s", (char *)data + offset);
-			} else {
-				trace_seq_puts(s, "ARRAY[");
-				for (i = 0; i < len; i++) {
-					if (i)
-						trace_seq_puts(s, ", ");
-					trace_seq_printf(s, "%02x",
-							 *((unsigned char *)data + offset + i));
-				}
-				trace_seq_putc(s, ']');
-				field->flags &= ~FIELD_IS_STRING;
-			}
-		} else {
-			val = pevent_read_number(event->pevent, data + field->offset,
-						 field->size);
-			if (field->flags & FIELD_IS_POINTER) {
-				trace_seq_printf(s, "0x%llx", val);
-			} else if (field->flags & FIELD_IS_SIGNED) {
-				switch (field->size) {
-				case 4:
-					/*
-					 * If field is long then print it in hex.
-					 * A long usually stores pointers.
-					 */
-					if (field->flags & FIELD_IS_LONG)
-						trace_seq_printf(s, "0x%x", (int)val);
-					else
-						trace_seq_printf(s, "%d", (int)val);
-					break;
-				case 2:
-					trace_seq_printf(s, "%2d", (short)val);
-					break;
-				case 1:
-					trace_seq_printf(s, "%1d", (char)val);
-					break;
-				default:
-					trace_seq_printf(s, "%lld", val);
-				}
-			} else {
-				if (field->flags & FIELD_IS_LONG)
-					trace_seq_printf(s, "0x%llx", val);
-				else
-					trace_seq_printf(s, "%llu", val);
-			}
-		}
+		pevent_print_field(s, data, field);
 		field = field->next;
 	}
 }
@@ -4775,7 +4834,7 @@ static void pretty_print(struct trace_seq *s, void *data, int size, struct event
 
 	if (event->flags & EVENT_FL_FAILED) {
 		trace_seq_printf(s, "[FAILED TO PARSE]");
-		print_event_fields(s, data, size, event);
+		pevent_print_fields(s, data, size, event);
 		return;
 	}
 
@@ -4853,8 +4912,8 @@ static void pretty_print(struct trace_seq *s, void *data, int size, struct event
 				else
 					ls = 2;
 
-				if (*(ptr+1) == 'F' ||
-				    *(ptr+1) == 'f') {
+				if (*(ptr+1) == 'F' || *(ptr+1) == 'f' ||
+				    *(ptr+1) == 'S' || *(ptr+1) == 's') {
 					ptr++;
 					show_func = *ptr;
 				} else if (*(ptr+1) == 'M' || *(ptr+1) == 'm') {
@@ -4916,13 +4975,12 @@ static void pretty_print(struct trace_seq *s, void *data, int size, struct event
 				    sizeof(long) != 8) {
 					char *p;
 
-					ls = 2;
 					/* make %l into %ll */
-					p = strchr(format, 'l');
-					if (p)
+					if (ls == 1 && (p = strchr(format, 'l')))
 						memmove(p+1, p, strlen(p)+1);
 					else if (strcmp(format, "%p") == 0)
 						strcpy(format, "0x%llx");
+					ls = 2;
 				}
 				switch (ls) {
 				case -2:
@@ -5250,7 +5308,7 @@ void pevent_event_info(struct trace_seq *s, struct event_format *event,
 	int print_pretty = 1;
 
 	if (event->pevent->print_raw || (event->flags & EVENT_FL_PRINTRAW))
-		print_event_fields(s, record->data, record->size, event);
+		pevent_print_fields(s, record->data, record->size, event);
 	else {
 
 		if (event->handler && !(event->flags & EVENT_FL_NOHANDLE))

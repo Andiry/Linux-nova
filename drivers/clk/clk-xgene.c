@@ -27,7 +27,6 @@
 #include <linux/clkdev.h>
 #include <linux/clk-provider.h>
 #include <linux/of_address.h>
-#include <asm/setup.h>
 
 /* Register SCU_PCPPLL bit fields */
 #define N_DIV_RD(src)			(((src) & 0x000001ff))
@@ -352,7 +351,8 @@ static int xgene_clk_set_rate(struct clk_hw *hw, unsigned long rate,
 		/* Set new divider */
 		data = xgene_clk_read(pclk->param.divider_reg +
 				pclk->param.reg_divider_offset);
-		data &= ~((1 << pclk->param.reg_divider_width) - 1);
+		data &= ~((1 << pclk->param.reg_divider_width) - 1)
+				<< pclk->param.reg_divider_shift;
 		data |= divider;
 		xgene_clk_write(data, pclk->param.divider_reg +
 					pclk->param.reg_divider_offset);

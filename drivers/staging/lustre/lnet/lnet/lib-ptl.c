@@ -21,7 +21,7 @@
  * GPL HEADER END
  */
 /*
- * Copyright (c) 2012, Intel Corporation.
+ * Copyright (c) 2012, 2015, Intel Corporation.
  */
 /*
  * This file is part of Lustre, http://www.lustre.org/
@@ -420,9 +420,9 @@ lnet_mt_match_md(struct lnet_match_table *mtable,
 
 	if (info->mi_opc == LNET_MD_OP_GET ||
 	    !lnet_ptl_is_lazy(the_lnet.ln_portals[info->mi_portal]))
-		return LNET_MATCHMD_DROP | exhausted;
+		return exhausted | LNET_MATCHMD_DROP;
 
-	return LNET_MATCHMD_NONE | exhausted;
+	return exhausted | LNET_MATCHMD_NONE;
 }
 
 static int

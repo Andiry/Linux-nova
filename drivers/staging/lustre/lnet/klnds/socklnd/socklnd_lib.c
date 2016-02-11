@@ -69,7 +69,7 @@ ksocknal_lib_zc_capable(ksock_conn_t *conn)
 
 	/* ZC if the socket supports scatter/gather and doesn't need software
 	 * checksums */
-	return ((caps & NETIF_F_SG) != 0 && (caps & NETIF_F_ALL_CSUM) != 0);
+	return ((caps & NETIF_F_SG) != 0 && (caps & NETIF_F_CSUM_MASK) != 0);
 }
 
 int
@@ -355,9 +355,9 @@ ksocknal_lib_recv_kiov(ksock_conn_t *conn)
 			LASSERT(i < niov);
 
 			/* Dang! have to kmap again because I have nowhere to
-                         * stash the mapped address.  But by doing it while the
-                         * page is still mapped, the kernel just bumps the map
-                         * count and returns me the address it stashed. */
+			 * stash the mapped address.  But by doing it while the
+			 * page is still mapped, the kernel just bumps the map
+			 * count and returns me the address it stashed. */
 			base = kmap(kiov[i].kiov_page) + kiov[i].kiov_offset;
 			fragnob = kiov[i].kiov_len;
 			if (fragnob > sum)
@@ -580,8 +580,6 @@ ksocknal_lib_push_conn(ksock_conn_t *conn)
 	ksocknal_connsock_decref(conn);
 }
 
-extern void ksocknal_read_callback(ksock_conn_t *conn);
-extern void ksocknal_write_callback(ksock_conn_t *conn);
 /*
  * socket call back in Linux
  */

@@ -5,6 +5,8 @@
  */
 
 #include <asm-generic/vmlinux.lds.h>
+#include <asm/cache.h>
+#include <asm/kernel-pgtable.h>
 #include <asm/thread_info.h>
 #include <asm/memory.h>
 #include <asm/page.h>
@@ -60,8 +62,11 @@ PECOFF_FILE_ALIGNMENT = 0x200;
 #define PECOFF_EDATA_PADDING
 #endif
 
-#ifdef CONFIG_DEBUG_ALIGN_RODATA
+#if defined(CONFIG_DEBUG_ALIGN_RODATA)
 #define ALIGN_DEBUG_RO			. = ALIGN(1<<SECTION_SHIFT);
+#define ALIGN_DEBUG_RO_MIN(min)		ALIGN_DEBUG_RO
+#elif defined(CONFIG_DEBUG_RODATA)
+#define ALIGN_DEBUG_RO			. = ALIGN(1<<PAGE_SHIFT);
 #define ALIGN_DEBUG_RO_MIN(min)		ALIGN_DEBUG_RO
 #else
 #define ALIGN_DEBUG_RO
@@ -108,7 +113,6 @@ SECTIONS
 		*(.got)			/* Global offset table		*/
 	}
 
-	ALIGN_DEBUG_RO
 	RO_DATA(PAGE_SIZE)
 	EXCEPTION_TABLE(8)
 	NOTES
@@ -123,7 +127,6 @@ SECTIONS
 		ARM_EXIT_KEEP(EXIT_TEXT)
 	}
 
-	ALIGN_DEBUG_RO_MIN(16)
 	.init.data : {
 		INIT_DATA
 		INIT_SETUP(16)
@@ -136,10 +139,7 @@ SECTIONS
 		ARM_EXIT_KEEP(EXIT_DATA)
 	}
 
-	PERCPU_SECTION(64)
-
-	. = ALIGN(PAGE_SIZE);
-	__init_end = .;
+	PERCPU_SECTION(L1_CACHE_BYTES)
 
 	. = ALIGN(4);
 	.altinstructions : {
@@ -152,9 +152,11 @@ SECTIONS
 	}
 
 	. = ALIGN(PAGE_SIZE);
+	__init_end = .;
+
 	_data = .;
 	_sdata = .;
-	RW_DATA_SECTION(64, PAGE_SIZE, THREAD_SIZE)
+	RW_DATA_SECTION(L1_CACHE_BYTES, PAGE_SIZE, THREAD_SIZE)
 	PECOFF_EDATA_PADDING
 	_edata = .;
 

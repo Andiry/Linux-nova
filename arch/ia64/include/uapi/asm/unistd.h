@@ -334,5 +334,8 @@
 #define __NR_execveat			1342
 #define __NR_userfaultfd		1343
 #define __NR_membarrier			1344
+#define __NR_kcmp			1345
+#define __NR_mlock2			1346
+#define __NR_copy_file_range		1347
 
 #endif /* _UAPI_ASM_IA64_UNISTD_H */

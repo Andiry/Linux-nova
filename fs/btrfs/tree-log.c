@@ -229,7 +229,9 @@ int btrfs_pin_log_trans(struct btrfs_root *root)
 void btrfs_end_log_trans(struct btrfs_root *root)
 {
 	if (atomic_dec_and_test(&root->log_writers)) {
-		smp_mb();
+		/*
+		 * Implicit memory barrier after atomic_dec_and_test
+		 */
 		if (waitqueue_active(&root->log_writer_wait))
 			wake_up(&root->log_writer_wait);
 	}
@@ -691,7 +693,7 @@ static noinline int replay_one_extent(struct btrfs_trans_handle *trans,
 				ret = btrfs_inc_extent_ref(trans, root,
 						ins.objectid, ins.offset,
 						0, root->root_key.objectid,
-						key->objectid, offset, 0);
+						key->objectid, offset);
 				if (ret)
 					goto out;
 			} else {
@@ -2820,7 +2822,9 @@ int btrfs_sync_log(struct btrfs_trans_handle *trans,
 
 	mutex_lock(&log_root_tree->log_mutex);
 	if (atomic_dec_and_test(&log_root_tree->log_writers)) {
-		smp_mb();
+		/*
+		 * Implicit memory barrier after atomic_dec_and_test
+		 */
 		if (waitqueue_active(&log_root_tree->log_writer_wait))
 			wake_up(&log_root_tree->log_writer_wait);
 	}
@@ -2950,6 +2954,9 @@ out_wake_log_root:
 	atomic_set(&log_root_tree->log_commit[index2], 0);
 	mutex_unlock(&log_root_tree->log_mutex);
 
+	/*
+	 * The barrier before waitqueue_active is implied by mutex_unlock
+	 */
 	if (waitqueue_active(&log_root_tree->log_commit_wait[index2]))
 		wake_up(&log_root_tree->log_commit_wait[index2]);
 out:
@@ -2961,6 +2968,9 @@ out:
 	atomic_set(&root->log_commit[index1], 0);
 	mutex_unlock(&root->log_mutex);
 
+	/*
+	 * The barrier before waitqueue_active is implied by mutex_unlock
+	 */
 	if (waitqueue_active(&root->log_commit_wait[index1]))
 		wake_up(&root->log_commit_wait[index1]);
 	return ret;
@@ -4117,7 +4127,9 @@ static int btrfs_log_changed_extents(struct btrfs_trans_handle *trans,
 				     struct inode *inode,
 				     struct btrfs_path *path,
 				     struct list_head *logged_list,
-				     struct btrfs_log_ctx *ctx)
+				     struct btrfs_log_ctx *ctx,
+				     const u64 start,
+				     const u64 end)
 {
 	struct extent_map *em, *n;
 	struct list_head extents;
@@ -4156,7 +4168,13 @@ static int btrfs_log_changed_extents(struct btrfs_trans_handle *trans,
 	}
 
 	list_sort(NULL, &extents, extent_cmp);
-
+	/*
+	 * Collect any new ordered extents within the range. This is to
+	 * prevent logging file extent items without waiting for the disk
+	 * location they point to being written. We do this only to deal
+	 * with races against concurrent lockless direct IO writes.
+	 */
+	btrfs_get_logged_extents(inode, logged_list, start, end);
 process:
 	while (!list_empty(&extents)) {
 		em = list_entry(extents.next, struct extent_map, list);
@@ -4691,7 +4709,7 @@ log_extents:
 			goto out_unlock;
 		}
 		ret = btrfs_log_changed_extents(trans, root, inode, dst_path,
-						&logged_list, ctx);
+						&logged_list, ctx, start, end);
 		if (ret) {
 			err = ret;
 			goto out_unlock;
@@ -5314,7 +5332,7 @@ int btrfs_recover_log_trees(struct btrfs_root *log_root_tree)
 
 	ret = walk_log_tree(trans, log_root_tree, &wc);
 	if (ret) {
-		btrfs_error(fs_info, ret, "Failed to pin buffers while "
+		btrfs_std_error(fs_info, ret, "Failed to pin buffers while "
 			    "recovering log root tree.");
 		goto error;
 	}
@@ -5328,7 +5346,7 @@ again:
 		ret = btrfs_search_slot(NULL, log_root_tree, &key, path, 0, 0);
 
 		if (ret < 0) {
-			btrfs_error(fs_info, ret,
+			btrfs_std_error(fs_info, ret,
 				    "Couldn't find tree log root.");
 			goto error;
 		}
@@ -5346,7 +5364,7 @@ again:
 		log = btrfs_read_fs_root(log_root_tree, &found_key);
 		if (IS_ERR(log)) {
 			ret = PTR_ERR(log);
-			btrfs_error(fs_info, ret,
+			btrfs_std_error(fs_info, ret,
 				    "Couldn't read tree log root.");
 			goto error;
 		}
@@ -5361,7 +5379,7 @@ again:
 			free_extent_buffer(log->node);
 			free_extent_buffer(log->commit_root);
 			kfree(log);
-			btrfs_error(fs_info, ret, "Couldn't read target root "
+			btrfs_std_error(fs_info, ret, "Couldn't read target root "
 				    "for tree log recovery.");
 			goto error;
 		}

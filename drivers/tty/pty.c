@@ -7,7 +7,6 @@
  */
 
 #include <linux/module.h>
-
 #include <linux/errno.h>
 #include <linux/interrupt.h>
 #include <linux/tty.h>
@@ -501,6 +500,10 @@ static int pty_bsd_ioctl(struct tty_struct *tty,
 }
 
 static int legacy_count = CONFIG_LEGACY_PTY_COUNT;
+/*
+ * not really modular, but the easiest way to keep compat with existing
+ * bootargs behaviour is to continue using module_param here.
+ */
 module_param(legacy_count, int, 0);
 
 /*
@@ -785,7 +788,7 @@ static int ptmx_open(struct inode *inode, struct file *filp)
 	if (retval)
 		goto err_release;
 
-	tty_debug_hangup(tty, "(tty count=%d)\n", tty->count);
+	tty_debug_hangup(tty, "opening (count=%d)\n", tty->count);
 
 	tty_unlock(tty);
 	return 0;
@@ -877,4 +880,4 @@ static int __init pty_init(void)
 	unix98_pty_init();
 	return 0;
 }
-module_init(pty_init);
+device_initcall(pty_init);

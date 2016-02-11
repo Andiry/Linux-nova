@@ -304,7 +304,7 @@ static void amd_get_topology(struct cpuinfo_x86 *c)
 	int cpu = smp_processor_id();
 
 	/* get information required for multi-node processors */
-	if (cpu_has_topoext) {
+	if (boot_cpu_has(X86_FEATURE_TOPOEXT)) {
 		u32 eax, ebx, ecx, edx;
 
 		cpuid(0x8000001e, &eax, &ebx, &ecx, &edx);
@@ -352,6 +352,7 @@ static void amd_detect_cmp(struct cpuinfo_x86 *c)
 #ifdef CONFIG_SMP
 	unsigned bits;
 	int cpu = smp_processor_id();
+	unsigned int socket_id, core_complex_id;
 
 	bits = c->x86_coreid_bits;
 	/* Low order bits define the core id (index of core in socket) */
@@ -361,6 +362,18 @@ static void amd_detect_cmp(struct cpuinfo_x86 *c)
 	/* use socket ID also for last level cache */
 	per_cpu(cpu_llc_id, cpu) = c->phys_proc_id;
 	amd_get_topology(c);
+
+	/*
+	 * Fix percpu cpu_llc_id here as LLC topology is different
+	 * for Fam17h systems.
+	 */
+	 if (c->x86 != 0x17 || !cpuid_edx(0x80000006))
+		return;
+
+	socket_id	= (c->apicid >> bits) - 1;
+	core_complex_id	= (c->apicid & ((1 << bits) - 1)) >> 3;
+
+	per_cpu(cpu_llc_id, cpu) = (socket_id << 3) | core_complex_id;
 #endif
 }
 
@@ -421,8 +434,7 @@ static void srat_detect_node(struct cpuinfo_x86 *c)
 		 */
 		int ht_nodeid = c->initial_apicid;
 
-		if (ht_nodeid >= 0 &&
-		    __apicid_to_node[ht_nodeid] != NUMA_NO_NODE)
+		if (__apicid_to_node[ht_nodeid] != NUMA_NO_NODE)
 			node = __apicid_to_node[ht_nodeid];
 		/* Pick a nearby node */
 		if (!node_online(node))
@@ -665,9 +677,9 @@ static void init_amd_bd(struct cpuinfo_x86 *c)
 	 * Disable it on the affected CPUs.
 	 */
 	if ((c->x86_model >= 0x02) && (c->x86_model < 0x20)) {
-		if (!rdmsrl_safe(0xc0011021, &value) && !(value & 0x1E)) {
+		if (!rdmsrl_safe(MSR_F15H_IC_CFG, &value) && !(value & 0x1E)) {
 			value |= 0x1E;
-			wrmsrl_safe(0xc0011021, value);
+			wrmsrl_safe(MSR_F15H_IC_CFG, value);
 		}
 	}
 }
@@ -909,7 +921,7 @@ static bool cpu_has_amd_erratum(struct cpuinfo_x86 *cpu, const int *erratum)
 
 void set_dr_addr_mask(unsigned long mask, int dr)
 {
-	if (!cpu_has_bpext)
+	if (!boot_cpu_has(X86_FEATURE_BPEXT))
 		return;
 
 	switch (dr) {

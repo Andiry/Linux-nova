@@ -105,7 +105,7 @@ static void exynos_atomic_commit_complete(struct exynos_atomic_commit *commit)
 		atomic_inc(&exynos_crtc->pending_update);
 	}
 
-	drm_atomic_helper_commit_planes(dev, state);
+	drm_atomic_helper_commit_planes(dev, state, false);
 
 	exynos_atomic_wait_for_commit(state);
 
@@ -304,45 +304,6 @@ int exynos_atomic_commit(struct drm_device *dev, struct drm_atomic_state *state,
 	return 0;
 }
 
-#ifdef CONFIG_PM_SLEEP
-static int exynos_drm_suspend(struct drm_device *dev, pm_message_t state)
-{
-	struct drm_connector *connector;
-
-	drm_modeset_lock_all(dev);
-	list_for_each_entry(connector, &dev->mode_config.connector_list, head) {
-		int old_dpms = connector->dpms;
-
-		if (connector->funcs->dpms)
-			connector->funcs->dpms(connector, DRM_MODE_DPMS_OFF);
-
-		/* Set the old mode back to the connector for resume */
-		connector->dpms = old_dpms;
-	}
-	drm_modeset_unlock_all(dev);
-
-	return 0;
-}
-
-static int exynos_drm_resume(struct drm_device *dev)
-{
-	struct drm_connector *connector;
-
-	drm_modeset_lock_all(dev);
-	list_for_each_entry(connector, &dev->mode_config.connector_list, head) {
-		if (connector->funcs->dpms) {
-			int dpms = connector->dpms;
-
-			connector->dpms = DRM_MODE_DPMS_OFF;
-			connector->funcs->dpms(connector, dpms);
-		}
-	}
-	drm_modeset_unlock_all(dev);
-
-	return 0;
-}
-#endif
-
 static int exynos_drm_open(struct drm_device *dev, struct drm_file *file)
 {
 	struct drm_exynos_file_private *file_priv;
@@ -369,7 +330,12 @@ err_file_priv_free:
 static void exynos_drm_preclose(struct drm_device *dev,
 					struct drm_file *file)
 {
+	struct drm_crtc *crtc;
+
 	exynos_drm_subdrv_close(dev, file);
+
+	list_for_each_entry(crtc, &dev->mode_config.crtc_list, head)
+		exynos_drm_crtc_cancel_page_flip(crtc, file);
 }
 
 static void exynos_drm_postclose(struct drm_device *dev, struct drm_file *file)
@@ -405,25 +371,25 @@ static const struct vm_operations_struct exynos_drm_gem_vm_ops = {
 
 static const struct drm_ioctl_desc exynos_ioctls[] = {
 	DRM_IOCTL_DEF_DRV(EXYNOS_GEM_CREATE, exynos_drm_gem_create_ioctl,
-			DRM_UNLOCKED | DRM_AUTH | DRM_RENDER_ALLOW),
+			DRM_AUTH | DRM_RENDER_ALLOW),
 	DRM_IOCTL_DEF_DRV(EXYNOS_GEM_GET, exynos_drm_gem_get_ioctl,
-			DRM_UNLOCKED | DRM_RENDER_ALLOW),
+			DRM_RENDER_ALLOW),
 	DRM_IOCTL_DEF_DRV(EXYNOS_VIDI_CONNECTION, vidi_connection_ioctl,
-			DRM_UNLOCKED | DRM_AUTH),
+			DRM_AUTH),
 	DRM_IOCTL_DEF_DRV(EXYNOS_G2D_GET_VER, exynos_g2d_get_ver_ioctl,
-			DRM_UNLOCKED | DRM_AUTH | DRM_RENDER_ALLOW),
+			DRM_AUTH | DRM_RENDER_ALLOW),
 	DRM_IOCTL_DEF_DRV(EXYNOS_G2D_SET_CMDLIST, exynos_g2d_set_cmdlist_ioctl,
-			DRM_UNLOCKED | DRM_AUTH | DRM_RENDER_ALLOW),
+			DRM_AUTH | DRM_RENDER_ALLOW),
 	DRM_IOCTL_DEF_DRV(EXYNOS_G2D_EXEC, exynos_g2d_exec_ioctl,
-			DRM_UNLOCKED | DRM_AUTH | DRM_RENDER_ALLOW),
+			DRM_AUTH | DRM_RENDER_ALLOW),
 	DRM_IOCTL_DEF_DRV(EXYNOS_IPP_GET_PROPERTY, exynos_drm_ipp_get_property,
-			DRM_UNLOCKED | DRM_AUTH | DRM_RENDER_ALLOW),
+			DRM_AUTH | DRM_RENDER_ALLOW),
 	DRM_IOCTL_DEF_DRV(EXYNOS_IPP_SET_PROPERTY, exynos_drm_ipp_set_property,
-			DRM_UNLOCKED | DRM_AUTH | DRM_RENDER_ALLOW),
+			DRM_AUTH | DRM_RENDER_ALLOW),
 	DRM_IOCTL_DEF_DRV(EXYNOS_IPP_QUEUE_BUF, exynos_drm_ipp_queue_buf,
-			DRM_UNLOCKED | DRM_AUTH | DRM_RENDER_ALLOW),
+			DRM_AUTH | DRM_RENDER_ALLOW),
 	DRM_IOCTL_DEF_DRV(EXYNOS_IPP_CMD_CTRL, exynos_drm_ipp_cmd_ctrl,
-			DRM_UNLOCKED | DRM_AUTH | DRM_RENDER_ALLOW),
+			DRM_AUTH | DRM_RENDER_ALLOW),
 };
 
 static const struct file_operations exynos_drm_driver_fops = {
@@ -449,7 +415,7 @@ static struct drm_driver exynos_drm_driver = {
 	.lastclose		= exynos_drm_lastclose,
 	.postclose		= exynos_drm_postclose,
 	.set_busid		= drm_platform_set_busid,
-	.get_vblank_counter	= drm_vblank_count,
+	.get_vblank_counter	= drm_vblank_no_hw_counter,
 	.enable_vblank		= exynos_drm_crtc_enable_vblank,
 	.disable_vblank		= exynos_drm_crtc_disable_vblank,
 	.gem_free_object	= exynos_drm_gem_free_object,
@@ -476,31 +442,54 @@ static struct drm_driver exynos_drm_driver = {
 };
 
 #ifdef CONFIG_PM_SLEEP
-static int exynos_drm_sys_suspend(struct device *dev)
+static int exynos_drm_suspend(struct device *dev)
 {
 	struct drm_device *drm_dev = dev_get_drvdata(dev);
-	pm_message_t message;
+	struct drm_connector *connector;
 
 	if (pm_runtime_suspended(dev) || !drm_dev)
 		return 0;
 
-	message.event = PM_EVENT_SUSPEND;
-	return exynos_drm_suspend(drm_dev, message);
+	drm_modeset_lock_all(drm_dev);
+	drm_for_each_connector(connector, drm_dev) {
+		int old_dpms = connector->dpms;
+
+		if (connector->funcs->dpms)
+			connector->funcs->dpms(connector, DRM_MODE_DPMS_OFF);
+
+		/* Set the old mode back to the connector for resume */
+		connector->dpms = old_dpms;
+	}
+	drm_modeset_unlock_all(drm_dev);
+
+	return 0;
 }
 
-static int exynos_drm_sys_resume(struct device *dev)
+static int exynos_drm_resume(struct device *dev)
 {
 	struct drm_device *drm_dev = dev_get_drvdata(dev);
+	struct drm_connector *connector;
 
 	if (pm_runtime_suspended(dev) || !drm_dev)
 		return 0;
 
-	return exynos_drm_resume(drm_dev);
+	drm_modeset_lock_all(drm_dev);
+	drm_for_each_connector(connector, drm_dev) {
+		if (connector->funcs->dpms) {
+			int dpms = connector->dpms;
+
+			connector->dpms = DRM_MODE_DPMS_OFF;
+			connector->funcs->dpms(connector, dpms);
+		}
+	}
+	drm_modeset_unlock_all(drm_dev);
+
+	return 0;
 }
 #endif
 
 static const struct dev_pm_ops exynos_drm_pm_ops = {
-	SET_SYSTEM_SLEEP_PM_OPS(exynos_drm_sys_suspend, exynos_drm_sys_resume)
+	SET_SYSTEM_SLEEP_PM_OPS(exynos_drm_suspend, exynos_drm_resume)
 };
 
 /* forward declaration */
@@ -529,8 +518,10 @@ static struct platform_driver *const exynos_drm_kms_drivers[] = {
 #ifdef CONFIG_DRM_EXYNOS_DSI
 	&dsi_driver,
 #endif
-#ifdef CONFIG_DRM_EXYNOS_HDMI
+#ifdef CONFIG_DRM_EXYNOS_MIXER
 	&mixer_driver,
+#endif
+#ifdef CONFIG_DRM_EXYNOS_HDMI
 	&hdmi_driver,
 #endif
 #ifdef CONFIG_DRM_EXYNOS_VIDI

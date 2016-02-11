@@ -37,7 +37,8 @@ Returns: -EFAULT if the given address is not accessible
 Allows userspace to query the actual limit and set a new limit for
 the maximum guest memory size. The limit will be rounded up to
 2048 MB, 4096 GB, 8192 TB respectively, as this limit is governed by
-the number of page table levels.
+the number of page table levels. In the case that there is no limit we will set
+the limit to KVM_S390_NO_MEM_LIMIT (U64_MAX).
 
 2. GROUP: KVM_S390_VM_CPU_MODEL
 Architectures: s390
@@ -74,7 +75,7 @@ struct kvm_s390_vm_cpu_processor {
 
 KVM does not enforce or limit the cpu model data in any form. Take the information
 retrieved by means of KVM_S390_VM_CPU_MACHINE as hint for reasonable configuration
-setups. Instruction interceptions triggered by additionally set facilitiy bits that
+setups. Instruction interceptions triggered by additionally set facility bits that
 are not handled by KVM need to by imlemented in the VM driver code.
 
 Parameters: address of buffer to store/set the processor related cpu

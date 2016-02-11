@@ -100,6 +100,7 @@ struct kkuc_reg {
 	struct file	*kr_fp;
 	__u32		kr_data;
 };
+
 static struct list_head kkuc_groups[KUC_GRP_MAX+1] = {};
 /* Protect message sending against remove and adds */
 static DECLARE_RWSEM(kg_sem);
@@ -109,7 +110,8 @@ static DECLARE_RWSEM(kg_sem);
  * @param uid identifier for this receiver
  * @param group group number
  */
-int libcfs_kkuc_group_add(struct file *filp, int uid, int group, __u32 data)
+int libcfs_kkuc_group_add(struct file *filp, int uid, unsigned int group,
+			  __u32 data)
 {
 	struct kkuc_reg *reg;
 

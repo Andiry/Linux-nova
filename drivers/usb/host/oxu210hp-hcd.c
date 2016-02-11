@@ -394,8 +394,7 @@ static void ehci_quiesce(struct oxu_hcd *oxu)
 	u32	temp;
 
 #ifdef DEBUG
-	if (!HC_IS_RUNNING(oxu_to_hcd(oxu)->state))
-		BUG();
+	BUG_ON(!HC_IS_RUNNING(oxu_to_hcd(oxu)->state));
 #endif
 
 	/* wait for any schedule enables/disables to take effect */
@@ -1709,9 +1708,8 @@ static void start_unlink_async(struct oxu_hcd *oxu, struct ehci_qh *qh)
 
 #ifdef DEBUG
 	assert_spin_locked(&oxu->lock);
-	if (oxu->reclaim || (qh->qh_state != QH_STATE_LINKED
-				&& qh->qh_state != QH_STATE_UNLINK_WAIT))
-		BUG();
+	BUG_ON(oxu->reclaim || (qh->qh_state != QH_STATE_LINKED
+				&& qh->qh_state != QH_STATE_UNLINK_WAIT));
 #endif
 
 	/* stop async schedule right now? */
@@ -2721,7 +2719,7 @@ static int oxu_run(struct usb_hcd *hcd)
 	 * streaming mappings for I/O buffers, like pci_map_single(),
 	 * can return segments above 4GB, if the device allows.
 	 *
-	 * NOTE:  the dma mask is visible through dma_supported(), so
+	 * NOTE:  the dma mask is visible through dev->dma_mask, so
 	 * drivers can pass this info along ... like NETIF_F_HIGHDMA,
 	 * Scsi_Host.highmem_io, and so forth.  It's readonly to all
 	 * host side drivers though.

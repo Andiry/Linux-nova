@@ -6,11 +6,11 @@
 #include "perf.h"
 #include "util/cache.h"
 #include "builtin.h"
-#include "util/exec_cmd.h"
+#include <subcmd/exec-cmd.h>
 #include "common-cmds.h"
-#include "util/parse-options.h"
-#include "util/run-command.h"
-#include "util/help.h"
+#include <subcmd/parse-options.h>
+#include <subcmd/run-command.h>
+#include <subcmd/help.h>
 #include "util/debug.h"
 
 static struct man_viewer_list {
@@ -407,7 +407,7 @@ static int get_html_page_path(struct strbuf *page_path, const char *page)
 #ifndef open_html
 static void open_html(const char *path)
 {
-	execl_perf_cmd("web--browse", "-c", "help.browser", path, NULL);
+	execl_cmd("web--browse", "-c", "help.browser", path, NULL);
 }
 #endif
 
@@ -463,7 +463,7 @@ int cmd_help(int argc, const char **argv, const char *prefix __maybe_unused)
 			builtin_help_subcommands, builtin_help_usage, 0);
 
 	if (show_all) {
-		printf("\n usage: %s\n\n", perf_usage_string);
+		printf("\n Usage: %s\n\n", perf_usage_string);
 		list_commands("perf commands", &main_cmds, &other_cmds);
 		printf(" %s\n\n", perf_more_info_string);
 		return 0;

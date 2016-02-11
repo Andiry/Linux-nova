@@ -96,7 +96,7 @@ static void omap_atomic_complete(struct omap_atomic_state_commit *commit)
 	dispc_runtime_get();
 
 	drm_atomic_helper_commit_modeset_disables(dev, old_state);
-	drm_atomic_helper_commit_planes(dev, old_state);
+	drm_atomic_helper_commit_planes(dev, old_state, false);
 	drm_atomic_helper_commit_modeset_enables(dev, old_state);
 
 	omap_atomic_wait_for_completion(dev, old_state);
@@ -547,14 +547,19 @@ static int ioctl_set_param(struct drm_device *dev, void *data,
 	return 0;
 }
 
+#define OMAP_BO_USER_MASK	0x00ffffff	/* flags settable by userspace */
+
 static int ioctl_gem_new(struct drm_device *dev, void *data,
 		struct drm_file *file_priv)
 {
 	struct drm_omap_gem_new *args = data;
+	u32 flags = args->flags & OMAP_BO_USER_MASK;
+
 	VERB("%p:%p: size=0x%08x, flags=%08x", dev, file_priv,
-			args->size.bytes, args->flags);
-	return omap_gem_new_handle(dev, file_priv, args->size,
-			args->flags, &args->handle);
+	     args->size.bytes, flags);
+
+	return omap_gem_new_handle(dev, file_priv, args->size, flags,
+				   &args->handle);
 }
 
 static int ioctl_gem_cpu_prep(struct drm_device *dev, void *data,
@@ -626,12 +631,12 @@ static int ioctl_gem_info(struct drm_device *dev, void *data,
 }
 
 static const struct drm_ioctl_desc ioctls[DRM_COMMAND_END - DRM_COMMAND_BASE] = {
-	DRM_IOCTL_DEF_DRV(OMAP_GET_PARAM, ioctl_get_param, DRM_UNLOCKED|DRM_AUTH),
-	DRM_IOCTL_DEF_DRV(OMAP_SET_PARAM, ioctl_set_param, DRM_UNLOCKED|DRM_AUTH|DRM_MASTER|DRM_ROOT_ONLY),
-	DRM_IOCTL_DEF_DRV(OMAP_GEM_NEW, ioctl_gem_new, DRM_UNLOCKED|DRM_AUTH),
-	DRM_IOCTL_DEF_DRV(OMAP_GEM_CPU_PREP, ioctl_gem_cpu_prep, DRM_UNLOCKED|DRM_AUTH),
-	DRM_IOCTL_DEF_DRV(OMAP_GEM_CPU_FINI, ioctl_gem_cpu_fini, DRM_UNLOCKED|DRM_AUTH),
-	DRM_IOCTL_DEF_DRV(OMAP_GEM_INFO, ioctl_gem_info, DRM_UNLOCKED|DRM_AUTH),
+	DRM_IOCTL_DEF_DRV(OMAP_GET_PARAM, ioctl_get_param, DRM_AUTH),
+	DRM_IOCTL_DEF_DRV(OMAP_SET_PARAM, ioctl_set_param, DRM_AUTH|DRM_MASTER|DRM_ROOT_ONLY),
+	DRM_IOCTL_DEF_DRV(OMAP_GEM_NEW, ioctl_gem_new, DRM_AUTH),
+	DRM_IOCTL_DEF_DRV(OMAP_GEM_CPU_PREP, ioctl_gem_cpu_prep, DRM_AUTH),
+	DRM_IOCTL_DEF_DRV(OMAP_GEM_CPU_FINI, ioctl_gem_cpu_fini, DRM_AUTH),
+	DRM_IOCTL_DEF_DRV(OMAP_GEM_INFO, ioctl_gem_info, DRM_AUTH),
 };
 
 /*
@@ -692,10 +697,6 @@ static int dev_load(struct drm_device *dev, unsigned long flags)
 		drm_crtc_vblank_off(priv->crtcs[i]);
 
 	priv->fbdev = omap_fbdev_init(dev);
-	if (!priv->fbdev) {
-		dev_warn(dev->dev, "omap_fbdev_init failed\n");
-		/* well, limp along without an fbdev.. maybe X11 will work? */
-	}
 
 	/* store off drm_device for use in pm ops */
 	dev_set_drvdata(dev->dev, dev);
@@ -753,7 +754,7 @@ static void dev_lastclose(struct drm_device *dev)
 {
 	int i;
 
-	/* we don't support vga-switcheroo.. so just make sure the fbdev
+	/* we don't support vga_switcheroo.. so just make sure the fbdev
 	 * mode is active
 	 */
 	struct omap_drm_private *priv = dev->dev_private;
@@ -831,7 +832,8 @@ static const struct file_operations omapdriver_fops = {
 };
 
 static struct drm_driver omap_drm_driver = {
-	.driver_features = DRIVER_MODESET | DRIVER_GEM  | DRIVER_PRIME,
+	.driver_features = DRIVER_MODESET | DRIVER_GEM  | DRIVER_PRIME |
+		DRIVER_ATOMIC,
 	.load = dev_load,
 	.unload = dev_unload,
 	.open = dev_open,
@@ -839,7 +841,7 @@ static struct drm_driver omap_drm_driver = {
 	.preclose = dev_preclose,
 	.postclose = dev_postclose,
 	.set_busid = drm_platform_set_busid,
-	.get_vblank_counter = drm_vblank_count,
+	.get_vblank_counter = drm_vblank_no_hw_counter,
 	.enable_vblank = omap_irq_enable_vblank,
 	.disable_vblank = omap_irq_disable_vblank,
 #ifdef CONFIG_DEBUG_FS
@@ -928,35 +930,23 @@ static struct platform_driver pdev = {
 	.remove = pdev_remove,
 };
 
+static struct platform_driver * const drivers[] = {
+	&omap_dmm_driver,
+	&pdev,
+};
+
 static int __init omap_drm_init(void)
 {
-	int r;
-
 	DBG("init");
 
-	r = platform_driver_register(&omap_dmm_driver);
-	if (r) {
-		pr_err("DMM driver registration failed\n");
-		return r;
-	}
-
-	r = platform_driver_register(&pdev);
-	if (r) {
-		pr_err("omapdrm driver registration failed\n");
-		platform_driver_unregister(&omap_dmm_driver);
-		return r;
-	}
-
-	return 0;
+	return platform_register_drivers(drivers, ARRAY_SIZE(drivers));
 }
 
 static void __exit omap_drm_fini(void)
 {
 	DBG("fini");
 
-	platform_driver_unregister(&pdev);
-
-	platform_driver_unregister(&omap_dmm_driver);
+	platform_unregister_drivers(drivers, ARRAY_SIZE(drivers));
 }
 
 /* need late_initcall() so we load after dss_driver's are loaded */

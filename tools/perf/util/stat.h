@@ -20,7 +20,7 @@ enum perf_stat_evsel_id {
 	PERF_STAT_EVSEL_ID__MAX,
 };
 
-struct perf_stat {
+struct perf_stat_evsel {
 	struct stats		res_stats[3];
 	enum perf_stat_evsel_id	id;
 };
@@ -31,6 +31,7 @@ enum aggr_mode {
 	AGGR_SOCKET,
 	AGGR_CORE,
 	AGGR_THREAD,
+	AGGR_UNSET,
 };
 
 struct perf_stat_config {
@@ -89,4 +90,14 @@ void perf_evlist__reset_stats(struct perf_evlist *evlist);
 
 int perf_stat_process_counter(struct perf_stat_config *config,
 			      struct perf_evsel *counter);
+struct perf_tool;
+union perf_event;
+struct perf_session;
+int perf_event__process_stat_event(struct perf_tool *tool,
+				   union perf_event *event,
+				   struct perf_session *session);
+
+size_t perf_event__fprintf_stat(union perf_event *event, FILE *fp);
+size_t perf_event__fprintf_stat_round(union perf_event *event, FILE *fp);
+size_t perf_event__fprintf_stat_config(union perf_event *event, FILE *fp);
 #endif

@@ -147,9 +147,9 @@ int hfi1_make_uc_req(struct hfi1_qp *qp)
 		case IB_WR_RDMA_WRITE:
 		case IB_WR_RDMA_WRITE_WITH_IMM:
 			ohdr->u.rc.reth.vaddr =
-				cpu_to_be64(wqe->wr.wr.rdma.remote_addr);
+				cpu_to_be64(wqe->rdma_wr.remote_addr);
 			ohdr->u.rc.reth.rkey =
-				cpu_to_be32(wqe->wr.wr.rdma.rkey);
+				cpu_to_be32(wqe->rdma_wr.rkey);
 			ohdr->u.rc.reth.length = cpu_to_be32(len);
 			hwords += sizeof(struct ib_reth) / 4;
 			if (len > pmtu) {
@@ -268,7 +268,7 @@ void hfi1_uc_rcv(struct hfi1_packet *packet)
 	u32 tlen = packet->tlen;
 	struct hfi1_qp *qp = packet->qp;
 	struct hfi1_other_headers *ohdr = packet->ohdr;
-	u32 opcode;
+	u32 bth0, opcode;
 	u32 hdrsize = packet->hlen;
 	u32 psn;
 	u32 pad;
@@ -278,10 +278,9 @@ void hfi1_uc_rcv(struct hfi1_packet *packet)
 	int has_grh = rcv_flags & HFI1_HAS_GRH;
 	int ret;
 	u32 bth1;
-	struct ib_grh *grh = NULL;
 
-	opcode = be32_to_cpu(ohdr->bth[0]);
-	if (hfi1_ruc_check_hdr(ibp, hdr, has_grh, qp, opcode))
+	bth0 = be32_to_cpu(ohdr->bth[0]);
+	if (hfi1_ruc_check_hdr(ibp, hdr, has_grh, qp, bth0))
 		return;
 
 	bth1 = be32_to_cpu(ohdr->bth[1]);
@@ -303,6 +302,7 @@ void hfi1_uc_rcv(struct hfi1_packet *packet)
 		}
 
 		if (bth1 & HFI1_FECN_SMASK) {
+			struct ib_grh *grh = NULL;
 			u16 pkey = (u16)be32_to_cpu(ohdr->bth[0]);
 			u16 slid = be16_to_cpu(hdr->lrh[3]);
 			u16 dlid = be16_to_cpu(hdr->lrh[1]);
@@ -310,13 +310,16 @@ void hfi1_uc_rcv(struct hfi1_packet *packet)
 			u8 sc5;
 
 			sc5 = ibp->sl_to_sc[qp->remote_ah_attr.sl];
+			if (has_grh)
+				grh = &hdr->u.l.grh;
 
-			return_cnp(ibp, qp, src_qp, pkey, dlid, slid, sc5, grh);
+			return_cnp(ibp, qp, src_qp, pkey, dlid, slid, sc5,
+				   grh);
 		}
 	}
 
 	psn = be32_to_cpu(ohdr->bth[2]);
-	opcode >>= 24;
+	opcode = (bth0 >> 24) & 0xff;
 
 	/* Compare the PSN verses the expected PSN. */
 	if (unlikely(cmp_psn(psn, qp->r_psn) != 0)) {

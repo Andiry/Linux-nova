@@ -32,6 +32,8 @@ struct mdp5_kms {
 	struct drm_device *dev;
 
 	struct mdp5_cfg_handler *cfg;
+	uint32_t caps;	/* MDP capabilities (MDP_CAP_XXX bits) */
+
 
 	/* mapper-id used to request GEM buffer mapped for scanout: */
 	int id;
@@ -220,6 +222,8 @@ struct drm_encoder *mdp5_encoder_init(struct drm_device *dev,
 		struct mdp5_interface *intf, struct mdp5_ctl *ctl);
 int mdp5_encoder_set_split_display(struct drm_encoder *encoder,
 					struct drm_encoder *slave_encoder);
+int mdp5_encoder_get_linecount(struct drm_encoder *encoder);
+u32 mdp5_encoder_get_framecount(struct drm_encoder *encoder);
 
 #ifdef CONFIG_DRM_MSM_DSI
 struct drm_encoder *mdp5_cmd_encoder_init(struct drm_device *dev,

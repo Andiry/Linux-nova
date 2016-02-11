@@ -569,6 +569,9 @@ serial8250_register_ports(struct uart_driver *drv, struct device *dev)
 	for (i = 0; i < nr_uarts; i++) {
 		struct uart_8250_port *up = &serial8250_ports[i];
 
+		if (up->port.type == PORT_8250_CIR)
+			continue;
+
 		if (up->port.dev)
 			continue;
 
@@ -617,7 +620,7 @@ static int univ8250_console_setup(struct console *co, char *options)
  *	@options: ptr to option string from console command line
  *
  *	Only attempts to match console command lines of the form:
- *	    console=uart[8250],io|mmio|mmio32,<addr>[,<options>]
+ *	    console=uart[8250],io|mmio|mmio16|mmio32,<addr>[,<options>]
  *	    console=uart[8250],0x<addr>[,<options>]
  *	This form is used to register an initial earlycon boot console and
  *	replace it with the serial8250_console at 8250 driver init.
@@ -647,8 +650,9 @@ static int univ8250_console_match(struct console *co, char *name, int idx,
 
 		if (port->iotype != iotype)
 			continue;
-		if ((iotype == UPIO_MEM || iotype == UPIO_MEM32) &&
-		    (port->mapbase != addr))
+		if ((iotype == UPIO_MEM || iotype == UPIO_MEM16 ||
+		     iotype == UPIO_MEM32 || iotype == UPIO_MEM32BE)
+		    && (port->mapbase != addr))
 			continue;
 		if (iotype == UPIO_PORT && port->iobase != addr)
 			continue;
@@ -1027,13 +1031,24 @@ int serial8250_register_8250_port(struct uart_8250_port *up)
 		if (up->dl_write)
 			uart->dl_write = up->dl_write;
 
-		if (serial8250_isa_config != NULL)
-			serial8250_isa_config(0, &uart->port,
-					&uart->capabilities);
+		if (uart->port.type != PORT_8250_CIR) {
+			if (serial8250_isa_config != NULL)
+				serial8250_isa_config(0, &uart->port,
+						&uart->capabilities);
 
-		ret = uart_add_one_port(&serial8250_reg, &uart->port);
-		if (ret == 0)
-			ret = uart->port.line;
+			ret = uart_add_one_port(&serial8250_reg,
+						&uart->port);
+			if (ret == 0)
+				ret = uart->port.line;
+		} else {
+			dev_info(uart->port.dev,
+				"skipping CIR port at 0x%lx / 0x%llx, IRQ %d\n",
+				uart->port.iobase,
+				(unsigned long long)uart->port.mapbase,
+				uart->port.irq);
+
+			ret = 0;
+		}
 	}
 	mutex_unlock(&serial_mutex);
 

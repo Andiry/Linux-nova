@@ -80,9 +80,6 @@ static int exofs_mknod(struct inode *dir, struct dentry *dentry, umode_t mode,
 	struct inode *inode;
 	int err;
 
-	if (!new_valid_dev(rdev))
-		return -EINVAL;
-
 	inode = exofs_new_inode(dir, mode);
 	err = PTR_ERR(inode);
 	if (!IS_ERR(inode)) {
@@ -114,6 +111,7 @@ static int exofs_symlink(struct inode *dir, struct dentry *dentry,
 	if (l > sizeof(oi->i_data)) {
 		/* slow symlink */
 		inode->i_op = &page_symlink_inode_operations;
+		inode_nohighmem(inode);
 		inode->i_mapping->a_ops = &exofs_aops;
 		memset(oi->i_data, 0, sizeof(oi->i_data));
 

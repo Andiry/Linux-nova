@@ -133,6 +133,21 @@ static int get_context_size(struct drm_device *dev)
 	return ret;
 }
 
+static void i915_gem_context_clean(struct intel_context *ctx)
+{
+	struct i915_hw_ppgtt *ppgtt = ctx->ppgtt;
+	struct i915_vma *vma, *next;
+
+	if (!ppgtt)
+		return;
+
+	list_for_each_entry_safe(vma, next, &ppgtt->base.inactive_list,
+				 mm_list) {
+		if (WARN_ON(__i915_vma_unbind_no_wait(vma)))
+			break;
+	}
+}
+
 void i915_gem_context_free(struct kref *ctx_ref)
 {
 	struct intel_context *ctx = container_of(ctx_ref, typeof(*ctx), ref);
@@ -141,6 +156,13 @@ void i915_gem_context_free(struct kref *ctx_ref)
 
 	if (i915.enable_execlists)
 		intel_lr_context_free(ctx);
+
+	/*
+	 * This context is going away and we need to remove all VMAs still
+	 * around. This is to handle imported shared objects for which
+	 * destructor did not run when their handles were closed.
+	 */
+	i915_gem_context_clean(ctx);
 
 	i915_ppgtt_put(ctx->ppgtt);
 
@@ -167,8 +189,15 @@ i915_gem_alloc_context_obj(struct drm_device *dev, size_t size)
 	 * shouldn't touch the cache level, especially as that
 	 * would make the object snooped which might have a
 	 * negative performance impact.
+	 *
+	 * Snooping is required on non-llc platforms in execlist
+	 * mode, but since all GGTT accesses use PAT entry 0 we
+	 * get snooping anyway regardless of cache_level.
+	 *
+	 * This is only applicable for Ivy Bridge devices since
+	 * later platforms don't have L3 control bits in the PTE.
 	 */
-	if (INTEL_INFO(dev)->gen >= 7 && !IS_VALLEYVIEW(dev)) {
+	if (IS_IVYBRIDGE(dev)) {
 		ret = i915_gem_object_set_cache_level(obj, I915_CACHE_L3_LLC);
 		/* Failure shouldn't ever happen this early */
 		if (WARN_ON(ret)) {
@@ -318,6 +347,10 @@ void i915_gem_context_reset(struct drm_device *dev)
 			i915_gem_context_unreference(lctx);
 			ring->last_context = NULL;
 		}
+
+		/* Force the GPU state to be reinitialised on enabling */
+		if (ring->default_context)
+			ring->default_context->legacy_hw_ctx.initialized = false;
 	}
 }
 
@@ -331,6 +364,13 @@ int i915_gem_context_init(struct drm_device *dev)
 	 * restriction on the context_disabled check can be loosened. */
 	if (WARN_ON(dev_priv->ring[RCS].default_context))
 		return 0;
+
+	if (intel_vgpu_active(dev) && HAS_LOGICAL_RING_CONTEXTS(dev)) {
+		if (!i915.enable_execlists) {
+			DRM_INFO("Only EXECLIST mode is supported in vgpu.\n");
+			return -EINVAL;
+		}
+	}
 
 	if (i915.enable_execlists) {
 		/* NB: intentionally left blank. We will allocate our own
@@ -525,7 +565,7 @@ mi_set_context(struct drm_i915_gem_request *req, u32 hw_flags)
 				if (signaller == ring)
 					continue;
 
-				intel_ring_emit(ring, RING_PSMI_CTL(signaller->mmio_base));
+				intel_ring_emit_reg(ring, RING_PSMI_CTL(signaller->mmio_base));
 				intel_ring_emit(ring, _MASKED_BIT_ENABLE(GEN6_PSMI_SLEEP_MSG_DISABLE));
 			}
 		}
@@ -550,7 +590,7 @@ mi_set_context(struct drm_i915_gem_request *req, u32 hw_flags)
 				if (signaller == ring)
 					continue;
 
-				intel_ring_emit(ring, RING_PSMI_CTL(signaller->mmio_base));
+				intel_ring_emit_reg(ring, RING_PSMI_CTL(signaller->mmio_base));
 				intel_ring_emit(ring, _MASKED_BIT_DISABLE(GEN6_PSMI_SLEEP_MSG_DISABLE));
 			}
 		}
@@ -679,7 +719,7 @@ static int do_switch(struct drm_i915_gem_request *req)
 	if (ret)
 		goto unpin_out;
 
-	if (!to->legacy_hw_ctx.initialized) {
+	if (!to->legacy_hw_ctx.initialized || i915_gem_context_is_default(to)) {
 		hw_flags |= MI_RESTORE_INHIBIT;
 		/* NB: If we inhibit the restore, the context is not allowed to
 		 * die because future work may end up depending on valid address
@@ -893,6 +933,14 @@ int i915_gem_context_getparam_ioctl(struct drm_device *dev, void *data,
 		break;
 	case I915_CONTEXT_PARAM_NO_ZEROMAP:
 		args->value = ctx->flags & CONTEXT_NO_ZEROMAP;
+		break;
+	case I915_CONTEXT_PARAM_GTT_SIZE:
+		if (ctx->ppgtt)
+			args->value = ctx->ppgtt->base.total;
+		else if (to_i915(dev)->mm.aliasing_ppgtt)
+			args->value = to_i915(dev)->mm.aliasing_ppgtt->base.total;
+		else
+			args->value = to_i915(dev)->gtt.base.total;
 		break;
 	default:
 		ret = -EINVAL;

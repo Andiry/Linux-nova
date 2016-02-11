@@ -132,13 +132,14 @@
  * HFI1_CAP_RESERVED_MASK bits.
  */
 #define HFI1_CAP_WRITABLE_MASK   (HFI1_CAP_SDMA_AHG |			\
-				 HFI1_CAP_HDRSUPP |			\
-				 HFI1_CAP_MULTI_PKT_EGR |		\
-				 HFI1_CAP_NODROP_RHQ_FULL |		\
-				 HFI1_CAP_NODROP_EGR_FULL |		\
-				 HFI1_CAP_ALLOW_PERM_JKEY |		\
-				 HFI1_CAP_STATIC_RATE_CTRL |		\
-				 HFI1_CAP_PRINT_UNIMPL)
+				  HFI1_CAP_HDRSUPP |			\
+				  HFI1_CAP_MULTI_PKT_EGR |		\
+				  HFI1_CAP_NODROP_RHQ_FULL |		\
+				  HFI1_CAP_NODROP_EGR_FULL |		\
+				  HFI1_CAP_ALLOW_PERM_JKEY |		\
+				  HFI1_CAP_STATIC_RATE_CTRL |		\
+				  HFI1_CAP_PRINT_UNIMPL |		\
+				  HFI1_CAP_TID_UNMAP)
 /*
  * A set of capability bits that are "global" and are not allowed to be
  * set in the user bitmask.
@@ -147,7 +148,6 @@
 				  HFI1_CAP_USE_SDMA_HEAD |		\
 				  HFI1_CAP_EXTENDED_PSN |		\
 				  HFI1_CAP_PRINT_UNIMPL |		\
-				  HFI1_CAP_QSFP_ENABLED |		\
 				  HFI1_CAP_NO_INTEGRITY |		\
 				  HFI1_CAP_PKEY_CHECK) <<		\
 				 HFI1_CAP_USER_SHIFT)
@@ -163,7 +163,6 @@
 				 HFI1_CAP_SDMA |			\
 				 HFI1_CAP_PRINT_UNIMPL |		\
 				 HFI1_CAP_STATIC_RATE_CTRL |		\
-				 HFI1_CAP_QSFP_ENABLED |		\
 				 HFI1_CAP_PKEY_CHECK |			\
 				 HFI1_CAP_MULTI_PKT_EGR |		\
 				 HFI1_CAP_EXTENDED_PSN |		\
@@ -206,7 +205,7 @@
  * to the driver itself, not the software interfaces it supports.
  */
 #ifndef HFI1_DRIVER_VERSION_BASE
-#define HFI1_DRIVER_VERSION_BASE "0.9-248"
+#define HFI1_DRIVER_VERSION_BASE "0.9-294"
 #endif
 
 /* create the final driver version string */

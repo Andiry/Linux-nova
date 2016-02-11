@@ -102,19 +102,6 @@ void get_online_cpus(void)
 }
 EXPORT_SYMBOL_GPL(get_online_cpus);
 
-bool try_get_online_cpus(void)
-{
-	if (cpu_hotplug.active_writer == current)
-		return true;
-	if (!mutex_trylock(&cpu_hotplug.lock))
-		return false;
-	cpuhp_lock_acquire_tryread();
-	atomic_inc(&cpu_hotplug.refcount);
-	mutex_unlock(&cpu_hotplug.lock);
-	return true;
-}
-EXPORT_SYMBOL_GPL(try_get_online_cpus);
-
 void put_online_cpus(void)
 {
 	int refcount;
@@ -304,8 +291,8 @@ static inline void check_for_tasks(int dead_cpu)
 {
 	struct task_struct *g, *p;
 
-	read_lock_irq(&tasklist_lock);
-	do_each_thread(g, p) {
+	read_lock(&tasklist_lock);
+	for_each_process_thread(g, p) {
 		if (!p->on_rq)
 			continue;
 		/*
@@ -320,8 +307,8 @@ static inline void check_for_tasks(int dead_cpu)
 
 		pr_warn("Task %s (pid=%d) is on cpu %d (state=%ld, flags=%x)\n",
 			p->comm, task_pid_nr(p), dead_cpu, p->state, p->flags);
-	} while_each_thread(g, p);
-	read_unlock_irq(&tasklist_lock);
+	}
+	read_unlock(&tasklist_lock);
 }
 
 struct take_cpu_down_param {
@@ -344,7 +331,7 @@ static int take_cpu_down(void *_param)
 	/* Give up timekeeping duties */
 	tick_handover_do_timer();
 	/* Park the stopper thread */
-	kthread_park(current);
+	stop_machine_park((long)param->hcpu);
 	return 0;
 }
 
@@ -772,71 +759,33 @@ const DECLARE_BITMAP(cpu_all_bits, NR_CPUS) = CPU_BITS_ALL;
 EXPORT_SYMBOL(cpu_all_bits);
 
 #ifdef CONFIG_INIT_ALL_POSSIBLE
-static DECLARE_BITMAP(cpu_possible_bits, CONFIG_NR_CPUS) __read_mostly
-	= CPU_BITS_ALL;
+struct cpumask __cpu_possible_mask __read_mostly
+	= {CPU_BITS_ALL};
 #else
-static DECLARE_BITMAP(cpu_possible_bits, CONFIG_NR_CPUS) __read_mostly;
+struct cpumask __cpu_possible_mask __read_mostly;
 #endif
-const struct cpumask *const cpu_possible_mask = to_cpumask(cpu_possible_bits);
-EXPORT_SYMBOL(cpu_possible_mask);
+EXPORT_SYMBOL(__cpu_possible_mask);
 
-static DECLARE_BITMAP(cpu_online_bits, CONFIG_NR_CPUS) __read_mostly;
-const struct cpumask *const cpu_online_mask = to_cpumask(cpu_online_bits);
-EXPORT_SYMBOL(cpu_online_mask);
+struct cpumask __cpu_online_mask __read_mostly;
+EXPORT_SYMBOL(__cpu_online_mask);
 
-static DECLARE_BITMAP(cpu_present_bits, CONFIG_NR_CPUS) __read_mostly;
-const struct cpumask *const cpu_present_mask = to_cpumask(cpu_present_bits);
-EXPORT_SYMBOL(cpu_present_mask);
+struct cpumask __cpu_present_mask __read_mostly;
+EXPORT_SYMBOL(__cpu_present_mask);
 
-static DECLARE_BITMAP(cpu_active_bits, CONFIG_NR_CPUS) __read_mostly;
-const struct cpumask *const cpu_active_mask = to_cpumask(cpu_active_bits);
-EXPORT_SYMBOL(cpu_active_mask);
-
-void set_cpu_possible(unsigned int cpu, bool possible)
-{
-	if (possible)
-		cpumask_set_cpu(cpu, to_cpumask(cpu_possible_bits));
-	else
-		cpumask_clear_cpu(cpu, to_cpumask(cpu_possible_bits));
-}
-
-void set_cpu_present(unsigned int cpu, bool present)
-{
-	if (present)
-		cpumask_set_cpu(cpu, to_cpumask(cpu_present_bits));
-	else
-		cpumask_clear_cpu(cpu, to_cpumask(cpu_present_bits));
-}
-
-void set_cpu_online(unsigned int cpu, bool online)
-{
-	if (online) {
-		cpumask_set_cpu(cpu, to_cpumask(cpu_online_bits));
-		cpumask_set_cpu(cpu, to_cpumask(cpu_active_bits));
-	} else {
-		cpumask_clear_cpu(cpu, to_cpumask(cpu_online_bits));
-	}
-}
-
-void set_cpu_active(unsigned int cpu, bool active)
-{
-	if (active)
-		cpumask_set_cpu(cpu, to_cpumask(cpu_active_bits));
-	else
-		cpumask_clear_cpu(cpu, to_cpumask(cpu_active_bits));
-}
+struct cpumask __cpu_active_mask __read_mostly;
+EXPORT_SYMBOL(__cpu_active_mask);
 
 void init_cpu_present(const struct cpumask *src)
 {
-	cpumask_copy(to_cpumask(cpu_present_bits), src);
+	cpumask_copy(&__cpu_present_mask, src);
 }
 
 void init_cpu_possible(const struct cpumask *src)
 {
-	cpumask_copy(to_cpumask(cpu_possible_bits), src);
+	cpumask_copy(&__cpu_possible_mask, src);
 }
 
 void init_cpu_online(const struct cpumask *src)
 {
-	cpumask_copy(to_cpumask(cpu_online_bits), src);
+	cpumask_copy(&__cpu_online_mask, src);
 }

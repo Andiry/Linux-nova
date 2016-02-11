@@ -130,18 +130,18 @@
 #define SAHARA_REG_IDAR		0x20
 
 struct sahara_hw_desc {
-	u32		hdr;
-	u32		len1;
-	dma_addr_t	p1;
-	u32		len2;
-	dma_addr_t	p2;
-	dma_addr_t	next;
+	u32	hdr;
+	u32	len1;
+	u32	p1;
+	u32	len2;
+	u32	p2;
+	u32	next;
 };
 
 struct sahara_hw_link {
-	u32		len;
-	dma_addr_t	p;
-	dma_addr_t	next;
+	u32	len;
+	u32	p;
+	u32	next;
 };
 
 struct sahara_ctx {
@@ -173,7 +173,6 @@ struct sahara_aes_reqctx {
  * @sg_in_idx: number of hw links
  * @in_sg: scatterlist for input data
  * @in_sg_chain: scatterlists for chained input data
- * @in_sg_chained: specifies if chained scatterlists are used or not
  * @total: total number of bytes for transfer
  * @last: is this the last block
  * @first: is this the first block
@@ -191,7 +190,6 @@ struct sahara_sha_reqctx {
 	unsigned int		sg_in_idx;
 	struct scatterlist	*in_sg;
 	struct scatterlist	in_sg_chain[2];
-	bool			in_sg_chained;
 	size_t			total;
 	unsigned int		last;
 	unsigned int		first;
@@ -230,9 +228,9 @@ struct sahara_dev {
 
 	size_t			total;
 	struct scatterlist	*in_sg;
-	unsigned int		nb_in_sg;
+	int		nb_in_sg;
 	struct scatterlist	*out_sg;
-	unsigned int		nb_out_sg;
+	int		nb_out_sg;
 
 	u32			error;
 };
@@ -274,31 +272,7 @@ static u32 sahara_aes_data_link_hdr(struct sahara_dev *dev)
 			SAHARA_HDR_CHA_SKHA | SAHARA_HDR_PARITY_BIT;
 }
 
-static int sahara_sg_length(struct scatterlist *sg,
-			    unsigned int total)
-{
-	int sg_nb;
-	unsigned int len;
-	struct scatterlist *sg_list;
-
-	sg_nb = 0;
-	sg_list = sg;
-
-	while (total) {
-		len = min(sg_list->length, total);
-
-		sg_nb++;
-		total -= len;
-
-		sg_list = sg_next(sg_list);
-		if (!sg_list)
-			total = 0;
-	}
-
-	return sg_nb;
-}
-
-static char *sahara_err_src[16] = {
+static const char *sahara_err_src[16] = {
 	"No error",
 	"Header error",
 	"Descriptor length error",
@@ -317,14 +291,14 @@ static char *sahara_err_src[16] = {
 	"DMA error"
 };
 
-static char *sahara_err_dmasize[4] = {
+static const char *sahara_err_dmasize[4] = {
 	"Byte transfer",
 	"Half-word transfer",
 	"Word transfer",
 	"Reserved"
 };
 
-static char *sahara_err_dmasrc[8] = {
+static const char *sahara_err_dmasrc[8] = {
 	"No error",
 	"AHB bus error",
 	"Internal IP bus error",
@@ -335,7 +309,7 @@ static char *sahara_err_dmasrc[8] = {
 	"DMA HW error"
 };
 
-static char *sahara_cha_errsrc[12] = {
+static const char *sahara_cha_errsrc[12] = {
 	"Input buffer non-empty",
 	"Illegal address",
 	"Illegal mode",
@@ -350,7 +324,7 @@ static char *sahara_cha_errsrc[12] = {
 	"Reserved"
 };
 
-static char *sahara_cha_err[4] = { "No error", "SKHA", "MDHA", "RNG" };
+static const char *sahara_cha_err[4] = { "No error", "SKHA", "MDHA", "RNG" };
 
 static void sahara_decode_error(struct sahara_dev *dev, unsigned int error)
 {
@@ -380,7 +354,7 @@ static void sahara_decode_error(struct sahara_dev *dev, unsigned int error)
 	dev_err(dev->device, "\n");
 }
 
-static char *sahara_state[4] = { "Idle", "Busy", "Error", "HW Fault" };
+static const char *sahara_state[4] = { "Idle", "Busy", "Error", "HW Fault" };
 
 static void sahara_decode_status(struct sahara_dev *dev, unsigned int status)
 {
@@ -442,8 +416,8 @@ static void sahara_dump_descriptors(struct sahara_dev *dev)
 		return;
 
 	for (i = 0; i < SAHARA_MAX_HW_DESC; i++) {
-		dev_dbg(dev->device, "Descriptor (%d) (0x%08x):\n",
-			i, dev->hw_phys_desc[i]);
+		dev_dbg(dev->device, "Descriptor (%d) (%pad):\n",
+			i, &dev->hw_phys_desc[i]);
 		dev_dbg(dev->device, "\thdr = 0x%08x\n", dev->hw_desc[i]->hdr);
 		dev_dbg(dev->device, "\tlen1 = %u\n", dev->hw_desc[i]->len1);
 		dev_dbg(dev->device, "\tp1 = 0x%08x\n", dev->hw_desc[i]->p1);
@@ -463,8 +437,8 @@ static void sahara_dump_links(struct sahara_dev *dev)
 		return;
 
 	for (i = 0; i < SAHARA_MAX_HW_LINK; i++) {
-		dev_dbg(dev->device, "Link (%d) (0x%08x):\n",
-			i, dev->hw_phys_link[i]);
+		dev_dbg(dev->device, "Link (%d) (%pad):\n",
+			i, &dev->hw_phys_link[i]);
 		dev_dbg(dev->device, "\tlen = %u\n", dev->hw_link[i]->len);
 		dev_dbg(dev->device, "\tp = 0x%08x\n", dev->hw_link[i]->p);
 		dev_dbg(dev->device, "\tnext = 0x%08x\n",
@@ -502,8 +476,16 @@ static int sahara_hw_descriptor_create(struct sahara_dev *dev)
 		idx++;
 	}
 
-	dev->nb_in_sg = sahara_sg_length(dev->in_sg, dev->total);
-	dev->nb_out_sg = sahara_sg_length(dev->out_sg, dev->total);
+	dev->nb_in_sg = sg_nents_for_len(dev->in_sg, dev->total);
+	if (dev->nb_in_sg < 0) {
+		dev_err(dev->device, "Invalid numbers of src SG.\n");
+		return dev->nb_in_sg;
+	}
+	dev->nb_out_sg = sg_nents_for_len(dev->out_sg, dev->total);
+	if (dev->nb_out_sg < 0) {
+		dev_err(dev->device, "Invalid numbers of dst SG.\n");
+		return dev->nb_out_sg;
+	}
 	if ((dev->nb_in_sg + dev->nb_out_sg) > SAHARA_MAX_HW_LINK) {
 		dev_err(dev->device, "not enough hw links (%d)\n",
 			dev->nb_in_sg + dev->nb_out_sg);
@@ -818,45 +800,30 @@ static int sahara_sha_hw_links_create(struct sahara_dev *dev,
 
 	dev->in_sg = rctx->in_sg;
 
-	dev->nb_in_sg = sahara_sg_length(dev->in_sg, rctx->total);
+	dev->nb_in_sg = sg_nents_for_len(dev->in_sg, rctx->total);
+	if (dev->nb_in_sg < 0) {
+		dev_err(dev->device, "Invalid numbers of src SG.\n");
+		return dev->nb_in_sg;
+	}
 	if ((dev->nb_in_sg) > SAHARA_MAX_HW_LINK) {
 		dev_err(dev->device, "not enough hw links (%d)\n",
 			dev->nb_in_sg + dev->nb_out_sg);
 		return -EINVAL;
 	}
 
-	if (rctx->in_sg_chained) {
-		i = start;
-		sg = dev->in_sg;
-		while (sg) {
-			ret = dma_map_sg(dev->device, sg, 1,
-					 DMA_TO_DEVICE);
-			if (!ret)
-				return -EFAULT;
+	sg = dev->in_sg;
+	ret = dma_map_sg(dev->device, dev->in_sg, dev->nb_in_sg, DMA_TO_DEVICE);
+	if (!ret)
+		return -EFAULT;
 
-			dev->hw_link[i]->len = sg->length;
-			dev->hw_link[i]->p = sg->dma_address;
+	for (i = start; i < dev->nb_in_sg + start; i++) {
+		dev->hw_link[i]->len = sg->length;
+		dev->hw_link[i]->p = sg->dma_address;
+		if (i == (dev->nb_in_sg + start - 1)) {
+			dev->hw_link[i]->next = 0;
+		} else {
 			dev->hw_link[i]->next = dev->hw_phys_link[i + 1];
 			sg = sg_next(sg);
-			i += 1;
-		}
-		dev->hw_link[i-1]->next = 0;
-	} else {
-		sg = dev->in_sg;
-		ret = dma_map_sg(dev->device, dev->in_sg, dev->nb_in_sg,
-				 DMA_TO_DEVICE);
-		if (!ret)
-			return -EFAULT;
-
-		for (i = start; i < dev->nb_in_sg + start; i++) {
-			dev->hw_link[i]->len = sg->length;
-			dev->hw_link[i]->p = sg->dma_address;
-			if (i == (dev->nb_in_sg + start - 1)) {
-				dev->hw_link[i]->next = 0;
-			} else {
-				dev->hw_link[i]->next = dev->hw_phys_link[i + 1];
-				sg = sg_next(sg);
-			}
 		}
 	}
 
@@ -1004,7 +971,6 @@ static int sahara_sha_prepare_request(struct ahash_request *req)
 		rctx->total = req->nbytes + rctx->buf_cnt;
 		rctx->in_sg = rctx->in_sg_chain;
 
-		rctx->in_sg_chained = true;
 		req->src = rctx->in_sg_chain;
 	/* only data from previous operation */
 	} else if (rctx->buf_cnt) {
@@ -1015,36 +981,17 @@ static int sahara_sha_prepare_request(struct ahash_request *req)
 		/* buf was copied into rembuf above */
 		sg_init_one(rctx->in_sg, rctx->rembuf, rctx->buf_cnt);
 		rctx->total = rctx->buf_cnt;
-		rctx->in_sg_chained = false;
 	/* no data from previous operation */
 	} else {
 		rctx->in_sg = req->src;
 		rctx->total = req->nbytes;
 		req->src = rctx->in_sg;
-		rctx->in_sg_chained = false;
 	}
 
 	/* on next call, we only have the remaining data in the buffer */
 	rctx->buf_cnt = hash_later;
 
 	return -EINPROGRESS;
-}
-
-static void sahara_sha_unmap_sg(struct sahara_dev *dev,
-				struct sahara_sha_reqctx *rctx)
-{
-	struct scatterlist *sg;
-
-	if (rctx->in_sg_chained) {
-		sg = dev->in_sg;
-		while (sg) {
-			dma_unmap_sg(dev->device, sg, 1, DMA_TO_DEVICE);
-			sg = sg_next(sg);
-		}
-	} else {
-		dma_unmap_sg(dev->device, dev->in_sg, dev->nb_in_sg,
-			DMA_TO_DEVICE);
-	}
 }
 
 static int sahara_sha_process(struct ahash_request *req)
@@ -1086,7 +1033,8 @@ static int sahara_sha_process(struct ahash_request *req)
 	}
 
 	if (rctx->sg_in_idx)
-		sahara_sha_unmap_sg(dev, rctx);
+		dma_unmap_sg(dev->device, dev->in_sg, dev->nb_in_sg,
+			     DMA_TO_DEVICE);
 
 	memcpy(rctx->context, dev->context_base, rctx->context_size);
 

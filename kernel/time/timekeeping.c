@@ -305,8 +305,7 @@ static inline s64 timekeeping_get_ns(struct tk_read_base *tkr)
 
 	delta = timekeeping_get_delta(tkr);
 
-	nsec = delta * tkr->mult + tkr->xtime_nsec;
-	nsec >>= tkr->shift;
+	nsec = (delta * tkr->mult + tkr->xtime_nsec) >> tkr->shift;
 
 	/* If arch requires, add in get_arch_timeoffset() */
 	return nsec + arch_gettimeoffset();
@@ -846,10 +845,23 @@ time64_t ktime_get_real_seconds(void)
 }
 EXPORT_SYMBOL_GPL(ktime_get_real_seconds);
 
+/**
+ * __ktime_get_real_seconds - The same as ktime_get_real_seconds
+ * but without the sequence counter protect. This internal function
+ * is called just when timekeeping lock is already held.
+ */
+time64_t __ktime_get_real_seconds(void)
+{
+	struct timekeeper *tk = &tk_core.timekeeper;
+
+	return tk->xtime_sec;
+}
+
+
 #ifdef CONFIG_NTP_PPS
 
 /**
- * getnstime_raw_and_real - get day and raw monotonic time in timespec format
+ * ktime_get_raw_and_real_ts64 - get day and raw monotonic time in timespec format
  * @ts_raw:	pointer to the timespec to be set to raw monotonic time
  * @ts_real:	pointer to the timespec to be set to the time of day
  *
@@ -857,7 +869,7 @@ EXPORT_SYMBOL_GPL(ktime_get_real_seconds);
  * same time atomically and stores the resulting timestamps in timespec
  * format.
  */
-void getnstime_raw_and_real(struct timespec *ts_raw, struct timespec *ts_real)
+void ktime_get_raw_and_real_ts64(struct timespec64 *ts_raw, struct timespec64 *ts_real)
 {
 	struct timekeeper *tk = &tk_core.timekeeper;
 	unsigned long seq;
@@ -868,7 +880,7 @@ void getnstime_raw_and_real(struct timespec *ts_raw, struct timespec *ts_real)
 	do {
 		seq = read_seqcount_begin(&tk_core.seq);
 
-		*ts_raw = timespec64_to_timespec(tk->raw_time);
+		*ts_raw = tk->raw_time;
 		ts_real->tv_sec = tk->xtime_sec;
 		ts_real->tv_nsec = 0;
 
@@ -877,10 +889,10 @@ void getnstime_raw_and_real(struct timespec *ts_raw, struct timespec *ts_real)
 
 	} while (read_seqcount_retry(&tk_core.seq, seq));
 
-	timespec_add_ns(ts_raw, nsecs_raw);
-	timespec_add_ns(ts_real, nsecs_real);
+	timespec64_add_ns(ts_raw, nsecs_raw);
+	timespec64_add_ns(ts_real, nsecs_real);
 }
-EXPORT_SYMBOL(getnstime_raw_and_real);
+EXPORT_SYMBOL(ktime_get_raw_and_real_ts64);
 
 #endif /* CONFIG_NTP_PPS */
 
@@ -959,7 +971,7 @@ int timekeeping_inject_offset(struct timespec *ts)
 	struct timespec64 ts64, tmp;
 	int ret = 0;
 
-	if ((unsigned long)ts->tv_nsec >= NSEC_PER_SEC)
+	if (!timespec_inject_offset_valid(ts))
 		return -EINVAL;
 
 	ts64 = timespec_to_timespec64(*ts);
@@ -1592,9 +1604,12 @@ static __always_inline void timekeeping_freqadjust(struct timekeeper *tk,
 {
 	s64 interval = tk->cycle_interval;
 	s64 xinterval = tk->xtime_interval;
+	u32 base = tk->tkr_mono.clock->mult;
+	u32 max = tk->tkr_mono.clock->maxadj;
+	u32 cur_adj = tk->tkr_mono.mult;
 	s64 tick_error;
 	bool negative;
-	u32 adj;
+	u32 adj_scale;
 
 	/* Remove any current error adj from freq calculation */
 	if (tk->ntp_err_mult)
@@ -1613,13 +1628,33 @@ static __always_inline void timekeeping_freqadjust(struct timekeeper *tk,
 	/* preserve the direction of correction */
 	negative = (tick_error < 0);
 
-	/* Sort out the magnitude of the correction */
-	tick_error = abs64(tick_error);
-	for (adj = 0; tick_error > interval; adj++)
+	/* If any adjustment would pass the max, just return */
+	if (negative && (cur_adj - 1) <= (base - max))
+		return;
+	if (!negative && (cur_adj + 1) >= (base + max))
+		return;
+	/*
+	 * Sort out the magnitude of the correction, but
+	 * avoid making so large a correction that we go
+	 * over the max adjustment.
+	 */
+	adj_scale = 0;
+	tick_error = abs(tick_error);
+	while (tick_error > interval) {
+		u32 adj = 1 << (adj_scale + 1);
+
+		/* Check if adjustment gets us within 1 unit from the max */
+		if (negative && (cur_adj - adj) <= (base - max))
+			break;
+		if (!negative && (cur_adj + adj) >= (base + max))
+			break;
+
+		adj_scale++;
 		tick_error >>= 1;
+	}
 
 	/* scale the corrections */
-	timekeeping_apply_adjustment(tk, offset, negative, adj);
+	timekeeping_apply_adjustment(tk, offset, negative, adj_scale);
 }
 
 /*
@@ -1674,7 +1709,7 @@ static void timekeeping_adjust(struct timekeeper *tk, s64 offset)
 /**
  * accumulate_nsecs_to_secs - Accumulates nsecs into secs
  *
- * Helper function that accumulates a the nsecs greater then a second
+ * Helper function that accumulates the nsecs greater than a second
  * from the xtime_nsec field to the xtime_secs field.
  * It also calls into the NTP code to handle leapsecond processing.
  *
@@ -1726,7 +1761,7 @@ static cycle_t logarithmic_accumulation(struct timekeeper *tk, cycle_t offset,
 	cycle_t interval = tk->cycle_interval << shift;
 	u64 raw_nsecs;
 
-	/* If the offset is smaller then a shifted interval, do nothing */
+	/* If the offset is smaller than a shifted interval, do nothing */
 	if (offset < interval)
 		return offset;
 
@@ -2025,7 +2060,7 @@ int do_adjtimex(struct timex *txc)
 /**
  * hardpps() - Accessor function to NTP __hardpps function
  */
-void hardpps(const struct timespec *phase_ts, const struct timespec *raw_ts)
+void hardpps(const struct timespec64 *phase_ts, const struct timespec64 *raw_ts)
 {
 	unsigned long flags;
 

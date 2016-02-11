@@ -65,6 +65,7 @@ struct hsu_dma_desc {
 	enum dma_transfer_direction direction;
 	struct hsu_dma_sg *sg;
 	unsigned int nents;
+	size_t length;
 	unsigned int active;
 	enum dma_status status;
 };
@@ -107,6 +108,7 @@ struct hsu_dma {
 
 	/* channels */
 	struct hsu_dma_chan		*chan;
+	unsigned short			nr_channels;
 };
 
 static inline struct hsu_dma *to_hsu_dma(struct dma_device *ddev)

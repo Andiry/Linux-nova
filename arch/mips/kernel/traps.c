@@ -37,6 +37,7 @@
 #include <linux/irq.h>
 #include <linux/perf_event.h>
 
+#include <asm/addrspace.h>
 #include <asm/bootinfo.h>
 #include <asm/branch.h>
 #include <asm/break.h>
@@ -1856,12 +1857,14 @@ void __noreturn nmi_exception_handler(struct pt_regs *regs)
 {
 	char str[100];
 
+	nmi_enter();
 	raw_notifier_call_chain(&nmi_chain, 0, regs);
 	bust_spinlocks(1);
 	snprintf(str, 100, "CPU%d NMI taken, CP0_EPC=%lx\n",
 		 smp_processor_id(), regs->cp0_epc);
 	regs->cp0_epc = read_c0_errorepc();
 	die(str, regs);
+	nmi_exit();
 }
 
 #define VECTORSPACING 0x100	/* for EI/VI mode */
@@ -2204,12 +2207,8 @@ void __init trap_init(void)
 		ebase = (unsigned long)
 			__alloc_bootmem(size, 1 << fls(size), 0);
 	} else {
-#ifdef CONFIG_KVM_GUEST
-#define KVM_GUEST_KSEG0     0x40000000
-        ebase = KVM_GUEST_KSEG0;
-#else
-        ebase = CKSEG0;
-#endif
+		ebase = CAC_BASE;
+
 		if (cpu_has_mips_r2_r6)
 			ebase += (read_c0_ebase() & 0x3ffff000);
 	}
@@ -2251,7 +2250,7 @@ void __init trap_init(void)
 	 * Only some CPUs have the watch exceptions.
 	 */
 	if (cpu_has_watch)
-		set_except_vector(23, handle_watch);
+		set_except_vector(EXCCODE_WATCH, handle_watch);
 
 	/*
 	 * Initialise interrupt handlers
@@ -2278,27 +2277,27 @@ void __init trap_init(void)
 	if (board_be_init)
 		board_be_init();
 
-	set_except_vector(0, using_rollback_handler() ? rollback_handle_int
-						      : handle_int);
-	set_except_vector(1, handle_tlbm);
-	set_except_vector(2, handle_tlbl);
-	set_except_vector(3, handle_tlbs);
+	set_except_vector(EXCCODE_INT, using_rollback_handler() ?
+					rollback_handle_int : handle_int);
+	set_except_vector(EXCCODE_MOD, handle_tlbm);
+	set_except_vector(EXCCODE_TLBL, handle_tlbl);
+	set_except_vector(EXCCODE_TLBS, handle_tlbs);
 
-	set_except_vector(4, handle_adel);
-	set_except_vector(5, handle_ades);
+	set_except_vector(EXCCODE_ADEL, handle_adel);
+	set_except_vector(EXCCODE_ADES, handle_ades);
 
-	set_except_vector(6, handle_ibe);
-	set_except_vector(7, handle_dbe);
+	set_except_vector(EXCCODE_IBE, handle_ibe);
+	set_except_vector(EXCCODE_DBE, handle_dbe);
 
-	set_except_vector(8, handle_sys);
-	set_except_vector(9, handle_bp);
-	set_except_vector(10, rdhwr_noopt ? handle_ri :
+	set_except_vector(EXCCODE_SYS, handle_sys);
+	set_except_vector(EXCCODE_BP, handle_bp);
+	set_except_vector(EXCCODE_RI, rdhwr_noopt ? handle_ri :
 			  (cpu_has_vtag_icache ?
 			   handle_ri_rdhwr_vivt : handle_ri_rdhwr));
-	set_except_vector(11, handle_cpu);
-	set_except_vector(12, handle_ov);
-	set_except_vector(13, handle_tr);
-	set_except_vector(14, handle_msa_fpe);
+	set_except_vector(EXCCODE_CPU, handle_cpu);
+	set_except_vector(EXCCODE_OV, handle_ov);
+	set_except_vector(EXCCODE_TR, handle_tr);
+	set_except_vector(EXCCODE_MSAFPE, handle_msa_fpe);
 
 	if (current_cpu_type() == CPU_R6000 ||
 	    current_cpu_type() == CPU_R6000A) {
@@ -2319,25 +2318,25 @@ void __init trap_init(void)
 		board_nmi_handler_setup();
 
 	if (cpu_has_fpu && !cpu_has_nofpuex)
-		set_except_vector(15, handle_fpe);
+		set_except_vector(EXCCODE_FPE, handle_fpe);
 
-	set_except_vector(16, handle_ftlb);
+	set_except_vector(MIPS_EXCCODE_TLBPAR, handle_ftlb);
 
 	if (cpu_has_rixiex) {
-		set_except_vector(19, tlb_do_page_fault_0);
-		set_except_vector(20, tlb_do_page_fault_0);
+		set_except_vector(EXCCODE_TLBRI, tlb_do_page_fault_0);
+		set_except_vector(EXCCODE_TLBXI, tlb_do_page_fault_0);
 	}
 
-	set_except_vector(21, handle_msa);
-	set_except_vector(22, handle_mdmx);
+	set_except_vector(EXCCODE_MSADIS, handle_msa);
+	set_except_vector(EXCCODE_MDMX, handle_mdmx);
 
 	if (cpu_has_mcheck)
-		set_except_vector(24, handle_mcheck);
+		set_except_vector(EXCCODE_MCHECK, handle_mcheck);
 
 	if (cpu_has_mipsmt)
-		set_except_vector(25, handle_mt);
+		set_except_vector(EXCCODE_THREAD, handle_mt);
 
-	set_except_vector(26, handle_dsp);
+	set_except_vector(EXCCODE_DSPDIS, handle_dsp);
 
 	if (board_cache_error_setup)
 		board_cache_error_setup();

@@ -169,19 +169,9 @@ static struct pinmux_ops dc_pmxops = {
 	.gpio_request_enable	= dc_pmx_request_gpio,
 };
 
-static int dc_gpio_request(struct gpio_chip *chip, unsigned gpio)
-{
-	return pinctrl_request_gpio(chip->base + gpio);
-}
-
-static void dc_gpio_free(struct gpio_chip *chip, unsigned gpio)
-{
-	pinctrl_free_gpio(chip->base + gpio);
-}
-
 static int dc_gpio_direction_input(struct gpio_chip *chip, unsigned gpio)
 {
-	struct dc_pinmap *pmap = container_of(chip, struct dc_pinmap, chip);
+	struct dc_pinmap *pmap = gpiochip_get_data(chip);
 	int reg_off = GP_DRIVE0(gpio/PINS_PER_COLLECTION);
 	int bit_off = gpio % PINS_PER_COLLECTION;
 	u8 drive;
@@ -201,7 +191,7 @@ static void dc_gpio_set(struct gpio_chip *chip, unsigned gpio, int value);
 static int dc_gpio_direction_output(struct gpio_chip *chip, unsigned gpio,
 				    int value)
 {
-	struct dc_pinmap *pmap = container_of(chip, struct dc_pinmap, chip);
+	struct dc_pinmap *pmap = gpiochip_get_data(chip);
 	int reg_off = GP_DRIVE0(gpio/PINS_PER_COLLECTION);
 	int bit_off = gpio % PINS_PER_COLLECTION;
 	u8 drive;
@@ -220,7 +210,7 @@ static int dc_gpio_direction_output(struct gpio_chip *chip, unsigned gpio,
 
 static int dc_gpio_get(struct gpio_chip *chip, unsigned gpio)
 {
-	struct dc_pinmap *pmap = container_of(chip, struct dc_pinmap, chip);
+	struct dc_pinmap *pmap = gpiochip_get_data(chip);
 	int reg_off = GP_INPUT(gpio/PINS_PER_COLLECTION);
 	int bit_off = gpio % PINS_PER_COLLECTION;
 	u8 input;
@@ -232,7 +222,7 @@ static int dc_gpio_get(struct gpio_chip *chip, unsigned gpio)
 
 static void dc_gpio_set(struct gpio_chip *chip, unsigned gpio, int value)
 {
-	struct dc_pinmap *pmap = container_of(chip, struct dc_pinmap, chip);
+	struct dc_pinmap *pmap = gpiochip_get_data(chip);
 	int reg_off = GP_OUTPUT0(gpio/PINS_PER_COLLECTION);
 	int bit_off = gpio % PINS_PER_COLLECTION;
 	u8 output;
@@ -254,9 +244,9 @@ static int dc_gpiochip_add(struct dc_pinmap *pmap, struct device_node *np)
 	int ret;
 
 	chip->label		= DRIVER_NAME;
-	chip->dev		= pmap->dev;
-	chip->request		= dc_gpio_request;
-	chip->free		= dc_gpio_free;
+	chip->parent		= pmap->dev;
+	chip->request		= gpiochip_generic_request;
+	chip->free		= gpiochip_generic_free;
 	chip->direction_input	= dc_gpio_direction_input;
 	chip->direction_output	= dc_gpio_direction_output;
 	chip->get		= dc_gpio_get;
@@ -268,7 +258,7 @@ static int dc_gpiochip_add(struct dc_pinmap *pmap, struct device_node *np)
 
 	spin_lock_init(&pmap->lock);
 
-	ret = gpiochip_add(chip);
+	ret = gpiochip_add_data(chip, pmap);
 	if (ret < 0)
 		return ret;
 

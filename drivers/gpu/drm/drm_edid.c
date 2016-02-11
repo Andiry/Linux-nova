@@ -637,8 +637,12 @@ static const struct minimode extra_modes[] = {
 /*
  * Probably taken from CEA-861 spec.
  * This table is converted from xorg's hw/xfree86/modes/xf86EdidModes.c.
+ *
+ * Index using the VIC.
  */
 static const struct drm_display_mode edid_cea_modes[] = {
+	/* 0 - dummy, VICs start at 1 */
+	{ },
 	/* 1 - 640x480@60Hz */
 	{ DRM_MODE("640x480", DRM_MODE_TYPE_DRIVER, 25175, 640, 656,
 		   752, 800, 0, 480, 490, 492, 525, 0,
@@ -987,9 +991,11 @@ static const struct drm_display_mode edid_cea_modes[] = {
 };
 
 /*
- * HDMI 1.4 4k modes.
+ * HDMI 1.4 4k modes. Index using the VIC.
  */
 static const struct drm_display_mode edid_4k_modes[] = {
+	/* 0 - dummy, VICs start at 1 */
+	{ },
 	/* 1 - 3840x2160@30Hz */
 	{ DRM_MODE("3840x2160", DRM_MODE_TYPE_DRIVER, 297000,
 		   3840, 4016, 4104, 4400, 0,
@@ -2044,7 +2050,7 @@ mode_in_range(const struct drm_display_mode *mode, struct edid *edid,
 static bool valid_inferred_mode(const struct drm_connector *connector,
 				const struct drm_display_mode *mode)
 {
-	struct drm_display_mode *m;
+	const struct drm_display_mode *m;
 	bool ok = false;
 
 	list_for_each_entry(m, &connector->probed_modes, head) {
@@ -2418,6 +2424,8 @@ add_cvt_modes(struct drm_connector *connector, struct edid *edid)
 	return closure.modes;
 }
 
+static void fixup_detailed_cea_mode_clock(struct drm_display_mode *mode);
+
 static void
 do_detailed_mode(struct detailed_timing *timing, void *c)
 {
@@ -2433,6 +2441,13 @@ do_detailed_mode(struct detailed_timing *timing, void *c)
 
 		if (closure->preferred)
 			newmode->type |= DRM_MODE_TYPE_PREFERRED;
+
+		/*
+		 * Detailed modes are limited to 10kHz pixel clock resolution,
+		 * so fix up anything that looks like CEA/HDMI mode, but the clock
+		 * is just slightly off.
+		 */
+		fixup_detailed_cea_mode_clock(newmode);
 
 		drm_mode_probed_add(closure->connector, newmode);
 		closure->modes++;
@@ -2529,11 +2544,38 @@ cea_mode_alternate_clock(const struct drm_display_mode *cea_mode)
 	 * and the 60Hz variant otherwise.
 	 */
 	if (cea_mode->vdisplay == 240 || cea_mode->vdisplay == 480)
-		clock = clock * 1001 / 1000;
+		clock = DIV_ROUND_CLOSEST(clock * 1001, 1000);
 	else
-		clock = DIV_ROUND_UP(clock * 1000, 1001);
+		clock = DIV_ROUND_CLOSEST(clock * 1000, 1001);
 
 	return clock;
+}
+
+static u8 drm_match_cea_mode_clock_tolerance(const struct drm_display_mode *to_match,
+					     unsigned int clock_tolerance)
+{
+	u8 vic;
+
+	if (!to_match->clock)
+		return 0;
+
+	for (vic = 1; vic < ARRAY_SIZE(edid_cea_modes); vic++) {
+		const struct drm_display_mode *cea_mode = &edid_cea_modes[vic];
+		unsigned int clock1, clock2;
+
+		/* Check both 60Hz and 59.94Hz */
+		clock1 = cea_mode->clock;
+		clock2 = cea_mode_alternate_clock(cea_mode);
+
+		if (abs(to_match->clock - clock1) > clock_tolerance &&
+		    abs(to_match->clock - clock2) > clock_tolerance)
+			continue;
+
+		if (drm_mode_equal_no_clocks(to_match, cea_mode))
+			return vic;
+	}
+
+	return 0;
 }
 
 /**
@@ -2545,13 +2587,13 @@ cea_mode_alternate_clock(const struct drm_display_mode *cea_mode)
  */
 u8 drm_match_cea_mode(const struct drm_display_mode *to_match)
 {
-	u8 mode;
+	u8 vic;
 
 	if (!to_match->clock)
 		return 0;
 
-	for (mode = 0; mode < ARRAY_SIZE(edid_cea_modes); mode++) {
-		const struct drm_display_mode *cea_mode = &edid_cea_modes[mode];
+	for (vic = 1; vic < ARRAY_SIZE(edid_cea_modes); vic++) {
+		const struct drm_display_mode *cea_mode = &edid_cea_modes[vic];
 		unsigned int clock1, clock2;
 
 		/* Check both 60Hz and 59.94Hz */
@@ -2561,11 +2603,16 @@ u8 drm_match_cea_mode(const struct drm_display_mode *to_match)
 		if ((KHZ2PICOS(to_match->clock) == KHZ2PICOS(clock1) ||
 		     KHZ2PICOS(to_match->clock) == KHZ2PICOS(clock2)) &&
 		    drm_mode_equal_no_clocks_no_stereo(to_match, cea_mode))
-			return mode + 1;
+			return vic;
 	}
 	return 0;
 }
 EXPORT_SYMBOL(drm_match_cea_mode);
+
+static bool drm_valid_cea_vic(u8 vic)
+{
+	return vic > 0 && vic < ARRAY_SIZE(edid_cea_modes);
+}
 
 /**
  * drm_get_cea_aspect_ratio - get the picture aspect ratio corresponding to
@@ -2576,10 +2623,7 @@ EXPORT_SYMBOL(drm_match_cea_mode);
  */
 enum hdmi_picture_aspect drm_get_cea_aspect_ratio(const u8 video_code)
 {
-	/* return picture aspect ratio for video_code - 1 to access the
-	 * right array element
-	*/
-	return edid_cea_modes[video_code-1].picture_aspect_ratio;
+	return edid_cea_modes[video_code].picture_aspect_ratio;
 }
 EXPORT_SYMBOL(drm_get_cea_aspect_ratio);
 
@@ -2600,6 +2644,33 @@ hdmi_mode_alternate_clock(const struct drm_display_mode *hdmi_mode)
 	return cea_mode_alternate_clock(hdmi_mode);
 }
 
+static u8 drm_match_hdmi_mode_clock_tolerance(const struct drm_display_mode *to_match,
+					      unsigned int clock_tolerance)
+{
+	u8 vic;
+
+	if (!to_match->clock)
+		return 0;
+
+	for (vic = 1; vic < ARRAY_SIZE(edid_4k_modes); vic++) {
+		const struct drm_display_mode *hdmi_mode = &edid_4k_modes[vic];
+		unsigned int clock1, clock2;
+
+		/* Make sure to also match alternate clocks */
+		clock1 = hdmi_mode->clock;
+		clock2 = hdmi_mode_alternate_clock(hdmi_mode);
+
+		if (abs(to_match->clock - clock1) > clock_tolerance &&
+		    abs(to_match->clock - clock2) > clock_tolerance)
+			continue;
+
+		if (drm_mode_equal_no_clocks(to_match, hdmi_mode))
+			return vic;
+	}
+
+	return 0;
+}
+
 /*
  * drm_match_hdmi_mode - look for a HDMI mode matching given mode
  * @to_match: display mode
@@ -2610,13 +2681,13 @@ hdmi_mode_alternate_clock(const struct drm_display_mode *hdmi_mode)
  */
 static u8 drm_match_hdmi_mode(const struct drm_display_mode *to_match)
 {
-	u8 mode;
+	u8 vic;
 
 	if (!to_match->clock)
 		return 0;
 
-	for (mode = 0; mode < ARRAY_SIZE(edid_4k_modes); mode++) {
-		const struct drm_display_mode *hdmi_mode = &edid_4k_modes[mode];
+	for (vic = 1; vic < ARRAY_SIZE(edid_4k_modes); vic++) {
+		const struct drm_display_mode *hdmi_mode = &edid_4k_modes[vic];
 		unsigned int clock1, clock2;
 
 		/* Make sure to also match alternate clocks */
@@ -2626,9 +2697,14 @@ static u8 drm_match_hdmi_mode(const struct drm_display_mode *to_match)
 		if ((KHZ2PICOS(to_match->clock) == KHZ2PICOS(clock1) ||
 		     KHZ2PICOS(to_match->clock) == KHZ2PICOS(clock2)) &&
 		    drm_mode_equal_no_clocks_no_stereo(to_match, hdmi_mode))
-			return mode + 1;
+			return vic;
 	}
 	return 0;
+}
+
+static bool drm_valid_hdmi_vic(u8 vic)
+{
+	return vic > 0 && vic < ARRAY_SIZE(edid_4k_modes);
 }
 
 static int
@@ -2650,16 +2726,16 @@ add_alternate_cea_modes(struct drm_connector *connector, struct edid *edid)
 	list_for_each_entry(mode, &connector->probed_modes, head) {
 		const struct drm_display_mode *cea_mode = NULL;
 		struct drm_display_mode *newmode;
-		u8 mode_idx = drm_match_cea_mode(mode) - 1;
+		u8 vic = drm_match_cea_mode(mode);
 		unsigned int clock1, clock2;
 
-		if (mode_idx < ARRAY_SIZE(edid_cea_modes)) {
-			cea_mode = &edid_cea_modes[mode_idx];
+		if (drm_valid_cea_vic(vic)) {
+			cea_mode = &edid_cea_modes[vic];
 			clock2 = cea_mode_alternate_clock(cea_mode);
 		} else {
-			mode_idx = drm_match_hdmi_mode(mode) - 1;
-			if (mode_idx < ARRAY_SIZE(edid_4k_modes)) {
-				cea_mode = &edid_4k_modes[mode_idx];
+			vic = drm_match_hdmi_mode(mode);
+			if (drm_valid_hdmi_vic(vic)) {
+				cea_mode = &edid_4k_modes[vic];
 				clock2 = hdmi_mode_alternate_clock(cea_mode);
 			}
 		}
@@ -2710,17 +2786,17 @@ drm_display_mode_from_vic_index(struct drm_connector *connector,
 {
 	struct drm_device *dev = connector->dev;
 	struct drm_display_mode *newmode;
-	u8 cea_mode;
+	u8 vic;
 
 	if (video_db == NULL || video_index >= video_len)
 		return NULL;
 
 	/* CEA modes are numbered 1..127 */
-	cea_mode = (video_db[video_index] & 127) - 1;
-	if (cea_mode >= ARRAY_SIZE(edid_cea_modes))
+	vic = (video_db[video_index] & 127);
+	if (!drm_valid_cea_vic(vic))
 		return NULL;
 
-	newmode = drm_mode_duplicate(dev, &edid_cea_modes[cea_mode]);
+	newmode = drm_mode_duplicate(dev, &edid_cea_modes[vic]);
 	if (!newmode)
 		return NULL;
 
@@ -2815,8 +2891,7 @@ static int add_hdmi_mode(struct drm_connector *connector, u8 vic)
 	struct drm_device *dev = connector->dev;
 	struct drm_display_mode *newmode;
 
-	vic--; /* VICs start at 1 */
-	if (vic >= ARRAY_SIZE(edid_4k_modes)) {
+	if (!drm_valid_hdmi_vic(vic)) {
 		DRM_ERROR("Unknown HDMI VIC: %d\n", vic);
 		return 0;
 	}
@@ -3103,6 +3178,49 @@ add_cea_modes(struct drm_connector *connector, struct edid *edid)
 	return modes;
 }
 
+static void fixup_detailed_cea_mode_clock(struct drm_display_mode *mode)
+{
+	const struct drm_display_mode *cea_mode;
+	int clock1, clock2, clock;
+	u8 vic;
+	const char *type;
+
+	/*
+	 * allow 5kHz clock difference either way to account for
+	 * the 10kHz clock resolution limit of detailed timings.
+	 */
+	vic = drm_match_cea_mode_clock_tolerance(mode, 5);
+	if (drm_valid_cea_vic(vic)) {
+		type = "CEA";
+		cea_mode = &edid_cea_modes[vic];
+		clock1 = cea_mode->clock;
+		clock2 = cea_mode_alternate_clock(cea_mode);
+	} else {
+		vic = drm_match_hdmi_mode_clock_tolerance(mode, 5);
+		if (drm_valid_hdmi_vic(vic)) {
+			type = "HDMI";
+			cea_mode = &edid_4k_modes[vic];
+			clock1 = cea_mode->clock;
+			clock2 = hdmi_mode_alternate_clock(cea_mode);
+		} else {
+			return;
+		}
+	}
+
+	/* pick whichever is closest */
+	if (abs(mode->clock - clock1) < abs(mode->clock - clock2))
+		clock = clock1;
+	else
+		clock = clock2;
+
+	if (mode->clock == clock)
+		return;
+
+	DRM_DEBUG("detailed mode matches %s VIC %d, adjusting clock %d -> %d\n",
+		  type, vic, mode->clock, clock);
+	mode->clock = clock;
+}
+
 static void
 parse_hdmi_vsdb(struct drm_connector *connector, const u8 *db)
 {
@@ -3361,7 +3479,7 @@ EXPORT_SYMBOL(drm_edid_to_speaker_allocation);
  * the sink doesn't support audio or video.
  */
 int drm_av_sync_delay(struct drm_connector *connector,
-		      struct drm_display_mode *mode)
+		      const struct drm_display_mode *mode)
 {
 	int i = !!(mode->flags & DRM_MODE_FLAG_INTERLACE);
 	int a, v;
@@ -3396,7 +3514,6 @@ EXPORT_SYMBOL(drm_av_sync_delay);
 /**
  * drm_select_eld - select one ELD from multiple HDMI/DP sinks
  * @encoder: the encoder just changed display mode
- * @mode: the adjusted display mode
  *
  * It's possible for one encoder to be associated with multiple HDMI/DP sinks.
  * The policy is now hard coded to simply use the first HDMI/DP sink's ELD.
@@ -3404,8 +3521,7 @@ EXPORT_SYMBOL(drm_av_sync_delay);
  * Return: The connector associated with the first HDMI/DP sink that has ELD
  * attached to it.
  */
-struct drm_connector *drm_select_eld(struct drm_encoder *encoder,
-				     struct drm_display_mode *mode)
+struct drm_connector *drm_select_eld(struct drm_encoder *encoder)
 {
 	struct drm_connector *connector;
 	struct drm_device *dev = encoder->dev;

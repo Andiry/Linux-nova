@@ -46,7 +46,7 @@ void tilcdc_module_cleanup(struct tilcdc_module *mod)
 static struct of_device_id tilcdc_of_match[];
 
 static struct drm_framebuffer *tilcdc_fb_create(struct drm_device *dev,
-		struct drm_file *file_priv, struct drm_mode_fb_cmd2 *mode_cmd)
+		struct drm_file *file_priv, const struct drm_mode_fb_cmd2 *mode_cmd)
 {
 	return drm_fb_cma_create(dev, file_priv, mode_cmd);
 }
@@ -294,6 +294,7 @@ static int tilcdc_load(struct drm_device *dev, unsigned long flags)
 			break;
 	}
 
+	drm_helper_disable_unused_functions(dev);
 	priv->fbdev = drm_fbdev_cma_init(dev, bpp,
 			dev->mode_config.num_crtc,
 			dev->mode_config.num_connector);
@@ -425,13 +426,13 @@ static void enable_vblank(struct drm_device *dev, bool enable)
 		tilcdc_clear(dev, reg, mask);
 }
 
-static int tilcdc_enable_vblank(struct drm_device *dev, int crtc)
+static int tilcdc_enable_vblank(struct drm_device *dev, unsigned int pipe)
 {
 	enable_vblank(dev, true);
 	return 0;
 }
 
-static void tilcdc_disable_vblank(struct drm_device *dev, int crtc)
+static void tilcdc_disable_vblank(struct drm_device *dev, unsigned int pipe)
 {
 	enable_vblank(dev, false);
 }
@@ -563,7 +564,7 @@ static struct drm_driver tilcdc_driver = {
 	.irq_preinstall     = tilcdc_irq_preinstall,
 	.irq_postinstall    = tilcdc_irq_postinstall,
 	.irq_uninstall      = tilcdc_irq_uninstall,
-	.get_vblank_counter = drm_vblank_count,
+	.get_vblank_counter = drm_vblank_no_hw_counter,
 	.enable_vblank      = tilcdc_enable_vblank,
 	.disable_vblank     = tilcdc_disable_vblank,
 	.gem_free_object    = drm_gem_cma_free_object,

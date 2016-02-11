@@ -1108,7 +1108,7 @@ retry_locked:
 		return 0;
 
 	/* past end of file? */
-	i_size = inode->i_size;   /* caller holds i_mutex */
+	i_size = i_size_read(inode);
 
 	if (page_off >= i_size ||
 	    (pos_in_page == 0 && (pos+len) >= i_size &&
@@ -1149,7 +1149,6 @@ static int ceph_write_begin(struct file *file, struct address_space *mapping,
 		page = grab_cache_page_write_begin(mapping, index, 0);
 		if (!page)
 			return -ENOMEM;
-		*pagep = page;
 
 		dout("write_begin file %p inode %p page %p %d~%d\n", file,
 		     inode, page, (int)pos, (int)len);
@@ -1184,8 +1183,7 @@ static int ceph_write_end(struct file *file, struct address_space *mapping,
 		zero_user_segment(page, from+copied, len);
 
 	/* did file size increase? */
-	/* (no need for i_size_read(); we caller holds i_mutex */
-	if (pos+copied > inode->i_size)
+	if (pos+copied > i_size_read(inode))
 		check_cap = ceph_inode_set_size(inode, pos+copied);
 
 	if (!PageUptodate(page))
@@ -1283,8 +1281,8 @@ static int ceph_filemap_fault(struct vm_area_struct *vma, struct vm_fault *vmf)
 		int ret1;
 		struct address_space *mapping = inode->i_mapping;
 		struct page *page = find_or_create_page(mapping, 0,
-						mapping_gfp_mask(mapping) &
-						~__GFP_FS);
+						mapping_gfp_constraint(mapping,
+						~__GFP_FS));
 		if (!page) {
 			ret = VM_FAULT_OOM;
 			goto out;
@@ -1378,11 +1376,13 @@ static int ceph_page_mkwrite(struct vm_area_struct *vma, struct vm_fault *vmf)
 
 	ret = VM_FAULT_NOPAGE;
 	if ((off > size) ||
-	    (page->mapping != inode->i_mapping))
+	    (page->mapping != inode->i_mapping)) {
+		unlock_page(page);
 		goto out;
+	}
 
 	ret = ceph_update_writeable_page(vma->vm_file, off, len, page);
-	if (ret == 0) {
+	if (ret >= 0) {
 		/* success.  we'll keep the page locked. */
 		set_page_dirty(page);
 		ret = VM_FAULT_LOCKED;
@@ -1393,8 +1393,6 @@ static int ceph_page_mkwrite(struct vm_area_struct *vma, struct vm_fault *vmf)
 			ret = VM_FAULT_SIGBUS;
 	}
 out:
-	if (ret != VM_FAULT_LOCKED)
-		unlock_page(page);
 	if (ret == VM_FAULT_LOCKED ||
 	    ci->i_inline_version != CEPH_INLINE_NONE) {
 		int dirty;
@@ -1428,7 +1426,8 @@ void ceph_fill_inline_data(struct inode *inode, struct page *locked_page,
 		if (i_size_read(inode) == 0)
 			return;
 		page = find_or_create_page(mapping, 0,
-					   mapping_gfp_mask(mapping) & ~__GFP_FS);
+					   mapping_gfp_constraint(mapping,
+					   ~__GFP_FS));
 		if (!page)
 			return;
 		if (PageUptodate(page)) {

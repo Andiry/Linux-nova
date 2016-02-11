@@ -59,6 +59,9 @@ struct blk_mq_hw_ctx {
 
 	struct blk_mq_cpu_notifier	cpu_notifier;
 	struct kobject		kobj;
+
+	unsigned long		poll_invoked;
+	unsigned long		poll_success;
 };
 
 struct blk_mq_tag_set {
@@ -97,6 +100,8 @@ typedef void (exit_request_fn)(void *, struct request *, unsigned int,
 typedef void (busy_iter_fn)(struct blk_mq_hw_ctx *, struct request *, void *,
 		bool);
 typedef void (busy_tag_iter_fn)(struct request *, void *, bool);
+typedef int (poll_fn)(struct blk_mq_hw_ctx *, unsigned int);
+
 
 struct blk_mq_ops {
 	/*
@@ -113,6 +118,11 @@ struct blk_mq_ops {
 	 * Called on request timeout
 	 */
 	timeout_fn		*timeout;
+
+	/*
+	 * Called to poll for completion of a specific tag.
+	 */
+	poll_fn			*poll;
 
 	softirq_done_fn		*complete;
 
@@ -166,7 +176,6 @@ enum {
 struct request_queue *blk_mq_init_queue(struct blk_mq_tag_set *);
 struct request_queue *blk_mq_init_allocated_queue(struct blk_mq_tag_set *set,
 						  struct request_queue *q);
-void blk_mq_finish_init(struct request_queue *q);
 int blk_mq_register_disk(struct gendisk *);
 void blk_mq_unregister_disk(struct gendisk *);
 
@@ -179,8 +188,14 @@ void blk_mq_insert_request(struct request *, bool, bool, bool);
 void blk_mq_free_request(struct request *rq);
 void blk_mq_free_hctx_request(struct blk_mq_hw_ctx *, struct request *rq);
 bool blk_mq_can_queue(struct blk_mq_hw_ctx *);
+
+enum {
+	BLK_MQ_REQ_NOWAIT	= (1 << 0), /* return when out of requests */
+	BLK_MQ_REQ_RESERVED	= (1 << 1), /* allocate from reserved pool */
+};
+
 struct request *blk_mq_alloc_request(struct request_queue *q, int rw,
-		gfp_t gfp, bool reserved);
+		unsigned int flags);
 struct request *blk_mq_tag_to_rq(struct blk_mq_tags *tags, unsigned int tag);
 struct cpumask *blk_mq_tags_cpumask(struct blk_mq_tags *tags);
 

@@ -216,13 +216,13 @@ typedef struct {
 	wait_queue_head_t       ksnd_connd_waitq;       /* connds sleep here */
 	int                     ksnd_connd_connecting;  /* # connds connecting
 							 */
-	long                    ksnd_connd_failed_stamp;/* time stamp of the
+	time64_t                ksnd_connd_failed_stamp;/* time stamp of the
 							 * last failed
 							 * connecting attempt */
-	unsigned                ksnd_connd_starting;    /* # starting connd */
-	long                    ksnd_connd_starting_stamp;/* time stamp of the
+	time64_t                ksnd_connd_starting_stamp;/* time stamp of the
 							   * last starting connd
 							   */
+	unsigned                ksnd_connd_starting;    /* # starting connd */
 	unsigned                ksnd_connd_running;     /* # running connd */
 	spinlock_t              ksnd_connd_lock;        /* serialise */
 
@@ -678,6 +678,9 @@ int ksocknal_lib_recv_iov(ksock_conn_t *conn);
 int ksocknal_lib_recv_kiov(ksock_conn_t *conn);
 int ksocknal_lib_get_conn_tunables(ksock_conn_t *conn, int *txmem,
 				   int *rxmem, int *nagle);
+
+void ksocknal_read_callback(ksock_conn_t *conn);
+void ksocknal_write_callback(ksock_conn_t *conn);
 
 int ksocknal_tunables_init(void);
 

@@ -272,7 +272,7 @@ static ssize_t mt_show_quirks(struct device *dev,
 			   struct device_attribute *attr,
 			   char *buf)
 {
-	struct hid_device *hdev = container_of(dev, struct hid_device, dev);
+	struct hid_device *hdev = to_hid_device(dev);
 	struct mt_device *td = hid_get_drvdata(hdev);
 
 	return sprintf(buf, "%u\n", td->mtclass.quirks);
@@ -282,7 +282,7 @@ static ssize_t mt_set_quirks(struct device *dev,
 			  struct device_attribute *attr,
 			  const char *buf, size_t count)
 {
-	struct hid_device *hdev = container_of(dev, struct hid_device, dev);
+	struct hid_device *hdev = to_hid_device(dev);
 	struct mt_device *td = hid_get_drvdata(hdev);
 
 	unsigned long val;
@@ -309,6 +309,41 @@ static struct attribute_group mt_attribute_group = {
 	.attrs = sysfs_attrs
 };
 
+static void mt_get_feature(struct hid_device *hdev, struct hid_report *report)
+{
+	struct mt_device *td = hid_get_drvdata(hdev);
+	int ret, size = hid_report_len(report);
+	u8 *buf;
+
+	/*
+	 * Only fetch the feature report if initial reports are not already
+	 * been retrieved. Currently this is only done for Windows 8 touch
+	 * devices.
+	 */
+	if (!(hdev->quirks & HID_QUIRK_NO_INIT_REPORTS))
+		return;
+	if (td->mtclass.name != MT_CLS_WIN_8)
+		return;
+
+	buf = hid_alloc_report_buf(report, GFP_KERNEL);
+	if (!buf)
+		return;
+
+	ret = hid_hw_raw_request(hdev, report->id, buf, size,
+				 HID_FEATURE_REPORT, HID_REQ_GET_REPORT);
+	if (ret < 0) {
+		dev_warn(&hdev->dev, "failed to fetch feature %d\n",
+			 report->id);
+	} else {
+		ret = hid_report_raw_event(hdev, HID_FEATURE_REPORT, buf,
+					   size, 0);
+		if (ret)
+			dev_warn(&hdev->dev, "failed to report feature\n");
+	}
+
+	kfree(buf);
+}
+
 static void mt_feature_mapping(struct hid_device *hdev,
 		struct hid_field *field, struct hid_usage *usage)
 {
@@ -322,11 +357,24 @@ static void mt_feature_mapping(struct hid_device *hdev,
 			break;
 		}
 
-		td->inputmode = field->report->id;
-		td->inputmode_index = usage->usage_index;
+		if (td->inputmode < 0) {
+			td->inputmode = field->report->id;
+			td->inputmode_index = usage->usage_index;
+		} else {
+			/*
+			 * Some elan panels wrongly declare 2 input mode
+			 * features, and silently ignore when we set the
+			 * value in the second field. Skip the second feature
+			 * and hope for the best.
+			 */
+			dev_info(&hdev->dev,
+				 "Ignoring the extra HID_DG_INPUTMODE\n");
+		}
 
 		break;
 	case HID_DG_CONTACTMAX:
+		mt_get_feature(hdev, field->report);
+
 		td->maxcontact_report_id = field->report->id;
 		td->maxcontacts = field->value[0];
 		if (!td->maxcontacts &&
@@ -343,6 +391,7 @@ static void mt_feature_mapping(struct hid_device *hdev,
 			break;
 		}
 
+		mt_get_feature(hdev, field->report);
 		if (field->value[usage->usage_index] == MT_BUTTONTYPE_CLICKPAD)
 			td->is_buttonpad = true;
 
@@ -448,6 +497,11 @@ static int mt_touch_input_mapping(struct hid_device *hdev, struct hid_input *hi,
 			mt_store_field(usage, td, hi);
 			return 1;
 		case HID_DG_CONFIDENCE:
+			if (cls->name == MT_CLS_WIN_8 &&
+				field->application == HID_DG_TOUCHPAD) {
+				cls->quirks &= ~MT_QUIRK_ALWAYS_VALID;
+				cls->quirks |= MT_QUIRK_VALID_IS_CONFIDENCE;
+			}
 			mt_store_field(usage, td, hi);
 			return 1;
 		case HID_DG_TIPSWITCH:
@@ -725,12 +779,13 @@ static void mt_touch_report(struct hid_device *hid, struct hid_report *report)
 		mt_sync_frame(td, report->field[0]->hidinput->input);
 }
 
-static void mt_touch_input_configured(struct hid_device *hdev,
+static int mt_touch_input_configured(struct hid_device *hdev,
 					struct hid_input *hi)
 {
 	struct mt_device *td = hid_get_drvdata(hdev);
 	struct mt_class *cls = &td->mtclass;
 	struct input_dev *input = hi->input;
+	int ret;
 
 	if (!td->maxcontacts)
 		td->maxcontacts = MT_DEFAULT_MAXCONTACT;
@@ -752,9 +807,12 @@ static void mt_touch_input_configured(struct hid_device *hdev,
 	if (td->is_buttonpad)
 		__set_bit(INPUT_PROP_BUTTONPAD, input->propbit);
 
-	input_mt_init_slots(input, td->maxcontacts, td->mt_flags);
+	ret = input_mt_init_slots(input, td->maxcontacts, td->mt_flags);
+	if (ret)
+		return ret;
 
 	td->mt_flags = 0;
+	return 0;
 }
 
 static int mt_input_mapping(struct hid_device *hdev, struct hid_input *hi,
@@ -930,15 +988,19 @@ static void mt_post_parse(struct mt_device *td)
 		cls->quirks &= ~MT_QUIRK_CONTACT_CNT_ACCURATE;
 }
 
-static void mt_input_configured(struct hid_device *hdev, struct hid_input *hi)
+static int mt_input_configured(struct hid_device *hdev, struct hid_input *hi)
 {
 	struct mt_device *td = hid_get_drvdata(hdev);
 	char *name;
 	const char *suffix = NULL;
 	struct hid_field *field = hi->report->field[0];
+	int ret;
 
-	if (hi->report->id == td->mt_report_id)
-		mt_touch_input_configured(hdev, hi);
+	if (hi->report->id == td->mt_report_id) {
+		ret = mt_touch_input_configured(hdev, hi);
+		if (ret)
+			return ret;
+	}
 
 	/*
 	 * some egalax touchscreens have "application == HID_DG_TOUCHSCREEN"
@@ -968,6 +1030,9 @@ static void mt_input_configured(struct hid_device *hdev, struct hid_input *hi)
 		case HID_DG_TOUCHSCREEN:
 			/* we do not set suffix = "Touchscreen" */
 			break;
+		case HID_DG_TOUCHPAD:
+			suffix = "Touchpad";
+			break;
 		case HID_GD_SYSTEM_CONTROL:
 			suffix = "System Control";
 			break;
@@ -989,6 +1054,8 @@ static void mt_input_configured(struct hid_device *hdev, struct hid_input *hi)
 			hi->input->name = name;
 		}
 	}
+
+	return 0;
 }
 
 static int mt_probe(struct hid_device *hdev, const struct hid_device_id *id)
@@ -1026,8 +1093,13 @@ static int mt_probe(struct hid_device *hdev, const struct hid_device_id *id)
 		 * reports. Fortunately, the Win8 spec says that all touches
 		 * should be sent during each report, making the initialization
 		 * of input reports unnecessary.
+		 *
+		 * In addition some touchpads do not behave well if we read
+		 * all feature reports from them. Instead we prevent
+		 * initial report fetching and then selectively fetch each
+		 * report we are interested in.
 		 */
-		hdev->quirks |= HID_QUIRK_NO_INIT_INPUT_REPORTS;
+		hdev->quirks |= HID_QUIRK_NO_INIT_REPORTS;
 
 	td = devm_kzalloc(&hdev->dev, sizeof(struct mt_device), GFP_KERNEL);
 	if (!td) {

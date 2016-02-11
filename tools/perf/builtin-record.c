@@ -11,7 +11,7 @@
 
 #include "util/build-id.h"
 #include "util/util.h"
-#include "util/parse-options.h"
+#include <subcmd/parse-options.h>
 #include "util/parse-events.h"
 
 #include "util/callchain.h"
@@ -31,6 +31,7 @@
 #include "util/auxtrace.h"
 #include "util/parse-branch-options.h"
 #include "util/parse-regs-options.h"
+#include "util/llvm-utils.h"
 
 #include <unistd.h>
 #include <sched.h>
@@ -49,7 +50,8 @@ struct record {
 	int			realtime_prio;
 	bool			no_buildid;
 	bool			no_buildid_cache;
-	long			samples;
+	bool			buildid_all;
+	unsigned long long	samples;
 };
 
 static int record__write(struct record *rec, void *bf, size_t size)
@@ -361,6 +363,13 @@ static int process_buildids(struct record *rec)
 	 */
 	symbol_conf.ignore_vmlinux_buildid = true;
 
+	/*
+	 * If --buildid-all is given, it marks all DSO regardless of hits,
+	 * so no need to process samples.
+	 */
+	if (rec->buildid_all)
+		rec->tool.sample = NULL;
+
 	return perf_session__process_events(session);
 }
 
@@ -451,6 +460,8 @@ static void record__init_features(struct record *rec)
 
 	if (!rec->opts.full_auxtrace)
 		perf_header__clear_feat(&session->header, HEADER_AUXTRACE);
+
+	perf_header__clear_feat(&session->header, HEADER_STAT);
 }
 
 static volatile int workload_exec_errno;
@@ -636,8 +647,29 @@ static int __cmd_record(struct record *rec, int argc, const char **argv)
 	/*
 	 * Let the child rip
 	 */
-	if (forks)
+	if (forks) {
+		union perf_event *event;
+
+		event = malloc(sizeof(event->comm) + machine->id_hdr_size);
+		if (event == NULL) {
+			err = -ENOMEM;
+			goto out_child;
+		}
+
+		/*
+		 * Some H/W events are generated before COMM event
+		 * which is emitted during exec(), so perf script
+		 * cannot see a correct process name for those events.
+		 * Synthesize COMM event to prevent it.
+		 */
+		perf_event__synthesize_comm(tool, event,
+					    rec->evlist->workload.pid,
+					    process_synthesized_event,
+					    machine);
+		free(event);
+
 		perf_evlist__start_workload(rec->evlist);
+	}
 
 	if (opts->initial_delay) {
 		usleep(opts->initial_delay * 1000);
@@ -646,7 +678,7 @@ static int __cmd_record(struct record *rec, int argc, const char **argv)
 
 	auxtrace_snapshot_enabled = 1;
 	for (;;) {
-		int hits = rec->samples;
+		unsigned long long hits = rec->samples;
 
 		if (record__mmap_read_all(rec) < 0) {
 			auxtrace_snapshot_enabled = 0;
@@ -732,12 +764,8 @@ out_child:
 
 		if (!rec->no_buildid) {
 			process_buildids(rec);
-			/*
-			 * We take all buildids when the file contains
-			 * AUX area tracing data because we do not decode the
-			 * trace because it would take too long.
-			 */
-			if (rec->opts.full_auxtrace)
+
+			if (rec->buildid_all)
 				dsos__hit_all(rec->session);
 		}
 		perf_session__write_header(rec->session, rec->evlist, fd, true);
@@ -791,8 +819,12 @@ int record_parse_callchain_opt(const struct option *opt,
 	}
 
 	ret = parse_callchain_record_opt(arg, &callchain_param);
-	if (!ret)
+	if (!ret) {
+		/* Enable data address sampling for DWARF unwind. */
+		if (callchain_param.record_mode == CALLCHAIN_DWARF)
+			record->sample_address = true;
 		callchain_debug();
+	}
 
 	return ret;
 }
@@ -815,6 +847,19 @@ int record_callchain_opt(const struct option *opt,
 
 static int perf_record_config(const char *var, const char *value, void *cb)
 {
+	struct record *rec = cb;
+
+	if (!strcmp(var, "record.build-id")) {
+		if (!strcmp(value, "cache"))
+			rec->no_buildid_cache = false;
+		else if (!strcmp(value, "no-cache"))
+			rec->no_buildid_cache = true;
+		else if (!strcmp(value, "skip"))
+			rec->no_buildid = true;
+		else
+			return -1;
+		return 0;
+	}
 	if (!strcmp(var, "record.call-graph"))
 		var = "call-graph.record-mode"; /* fall-through */
 
@@ -989,13 +1034,8 @@ static struct record record = {
 	},
 };
 
-#define CALLCHAIN_HELP "setup and enables call-graph (stack chain/backtrace) recording: "
-
-#ifdef HAVE_DWARF_UNWIND_SUPPORT
-const char record_callchain_help[] = CALLCHAIN_HELP "fp dwarf lbr";
-#else
-const char record_callchain_help[] = CALLCHAIN_HELP "fp lbr";
-#endif
+const char record_callchain_help[] = CALLCHAIN_RECORD_HELP
+	"\n\t\t\t\tDefault: fp";
 
 /*
  * XXX Will stay a global variable till we fix builtin-script.c to stop messing
@@ -1043,7 +1083,7 @@ struct option __record_options[] = {
 			   NULL, "enables call-graph recording" ,
 			   &record_callchain_opt),
 	OPT_CALLBACK(0, "call-graph", &record.opts,
-		     "mode[,dump_size]", record_callchain_help,
+		     "record_mode[,record_size]", record_callchain_help,
 		     &record_parse_callchain_opt),
 	OPT_INCR('v', "verbose", &verbose,
 		    "be more verbose (show counter open errors, etc)"),
@@ -1096,6 +1136,14 @@ struct option __record_options[] = {
 			"per thread proc mmap processing timeout in ms"),
 	OPT_BOOLEAN(0, "switch-events", &record.opts.record_switch_events,
 		    "Record context switch events"),
+	OPT_STRING(0, "clang-path", &llvm_param.clang_path, "clang path",
+		   "clang binary to use for compiling BPF scriptlets"),
+	OPT_STRING(0, "clang-opt", &llvm_param.clang_opt, "clang options",
+		   "options passed to clang when compiling BPF scriptlets"),
+	OPT_STRING(0, "vmlinux", &symbol_conf.vmlinux_name,
+		   "file", "vmlinux pathname"),
+	OPT_BOOLEAN(0, "buildid-all", &record.buildid_all,
+		    "Record build-id of all DSOs regardless of hits"),
 	OPT_END()
 };
 
@@ -1106,6 +1154,27 @@ int cmd_record(int argc, const char **argv, const char *prefix __maybe_unused)
 	int err;
 	struct record *rec = &record;
 	char errbuf[BUFSIZ];
+
+#ifndef HAVE_LIBBPF_SUPPORT
+# define set_nobuild(s, l, c) set_option_nobuild(record_options, s, l, "NO_LIBBPF=1", c)
+	set_nobuild('\0', "clang-path", true);
+	set_nobuild('\0', "clang-opt", true);
+# undef set_nobuild
+#endif
+
+#ifndef HAVE_BPF_PROLOGUE
+# if !defined (HAVE_DWARF_SUPPORT)
+#  define REASON  "NO_DWARF=1"
+# elif !defined (HAVE_LIBBPF_SUPPORT)
+#  define REASON  "NO_LIBBPF=1"
+# else
+#  define REASON  "this architecture doesn't support BPF prologue"
+# endif
+# define set_nobuild(s, l, c) set_option_nobuild(record_options, s, l, REASON, c)
+	set_nobuild('\0', "vmlinux", true);
+# undef set_nobuild
+# undef REASON
+#endif
 
 	rec->evlist = perf_evlist__new();
 	if (rec->evlist == NULL)
@@ -1119,14 +1188,15 @@ int cmd_record(int argc, const char **argv, const char *prefix __maybe_unused)
 		usage_with_options(record_usage, record_options);
 
 	if (nr_cgroups && !rec->opts.target.system_wide) {
-		ui__error("cgroup monitoring only available in"
-			  " system-wide mode\n");
-		usage_with_options(record_usage, record_options);
+		usage_with_options_msg(record_usage, record_options,
+			"cgroup monitoring only available in system-wide mode");
+
 	}
 	if (rec->opts.record_switch_events &&
 	    !perf_can_record_switch_events()) {
-		ui__error("kernel does not support recording context switch events (--switch-events option)\n");
-		usage_with_options(record_usage, record_options);
+		ui__error("kernel does not support recording context switch events\n");
+		parse_options_usage(record_usage, record_options, "switch-events", 0);
+		return -EINVAL;
 	}
 
 	if (!rec->itr) {
@@ -1190,6 +1260,14 @@ int cmd_record(int argc, const char **argv, const char *prefix __maybe_unused)
 	err = auxtrace_record__options(rec->itr, rec->evlist, &rec->opts);
 	if (err)
 		goto out_symbol_exit;
+
+	/*
+	 * We take all buildids when the file contains
+	 * AUX area tracing data because we do not decode the
+	 * trace because it would take too long.
+	 */
+	if (rec->opts.full_auxtrace)
+		rec->buildid_all = true;
 
 	if (record_opts__config(&rec->opts)) {
 		err = -EINVAL;

@@ -241,26 +241,6 @@ bail:
 	return ret;
 }
 
-/*
- * Switch to alternate path.
- * The QP s_lock should be held and interrupts disabled.
- */
-void hfi1_migrate_qp(struct hfi1_qp *qp)
-{
-	struct ib_event ev;
-
-	qp->s_mig_state = IB_MIG_MIGRATED;
-	qp->remote_ah_attr = qp->alt_ah_attr;
-	qp->port_num = qp->alt_ah_attr.port_num;
-	qp->s_pkey_index = qp->s_alt_pkey_index;
-	qp->s_flags |= HFI1_S_AHG_CLEAR;
-
-	ev.device = qp->ibqp.device;
-	ev.element.qp = &qp->ibqp;
-	ev.event = IB_EVENT_PATH_MIG;
-	qp->ibqp.event_handler(&ev, qp->ibqp.qp_context);
-}
-
 static __be64 get_sguid(struct hfi1_ibport *ibp, unsigned index)
 {
 	if (!index) {
@@ -308,11 +288,12 @@ int hfi1_ruc_check_hdr(struct hfi1_ibport *ibp, struct hfi1_ib_header *hdr,
 		}
 		if (unlikely(rcv_pkey_check(ppd_from_ibp(ibp), (u16)bth0,
 					    sc5, be16_to_cpu(hdr->lrh[3])))) {
-			hfi1_bad_pqkey(ibp, IB_NOTICE_TRAP_BAD_PKEY,
+			hfi1_bad_pqkey(ibp, OPA_TRAP_BAD_P_KEY,
 				       (u16)bth0,
 				       (be16_to_cpu(hdr->lrh[0]) >> 4) & 0xF,
 				       0, qp->ibqp.qp_num,
-				       hdr->lrh[3], hdr->lrh[1]);
+				       be16_to_cpu(hdr->lrh[3]),
+				       be16_to_cpu(hdr->lrh[1]));
 			goto err;
 		}
 		/* Validate the SLID. See Ch. 9.6.1.5 and 17.2.8 */
@@ -340,11 +321,12 @@ int hfi1_ruc_check_hdr(struct hfi1_ibport *ibp, struct hfi1_ib_header *hdr,
 		}
 		if (unlikely(rcv_pkey_check(ppd_from_ibp(ibp), (u16)bth0,
 					    sc5, be16_to_cpu(hdr->lrh[3])))) {
-			hfi1_bad_pqkey(ibp, IB_NOTICE_TRAP_BAD_PKEY,
+			hfi1_bad_pqkey(ibp, OPA_TRAP_BAD_P_KEY,
 				       (u16)bth0,
 				       (be16_to_cpu(hdr->lrh[0]) >> 4) & 0xF,
 				       0, qp->ibqp.qp_num,
-				       hdr->lrh[3], hdr->lrh[1]);
+				       be16_to_cpu(hdr->lrh[3]),
+				       be16_to_cpu(hdr->lrh[1]));
 			goto err;
 		}
 		/* Validate the SLID. See Ch. 9.6.1.5 */
@@ -481,8 +463,8 @@ again:
 		if (wqe->length == 0)
 			break;
 		if (unlikely(!hfi1_rkey_ok(qp, &qp->r_sge.sge, wqe->length,
-					   wqe->wr.wr.rdma.remote_addr,
-					   wqe->wr.wr.rdma.rkey,
+					   wqe->rdma_wr.remote_addr,
+					   wqe->rdma_wr.rkey,
 					   IB_ACCESS_REMOTE_WRITE)))
 			goto acc_err;
 		qp->r_sge.sg_list = NULL;
@@ -494,8 +476,8 @@ again:
 		if (unlikely(!(qp->qp_access_flags & IB_ACCESS_REMOTE_READ)))
 			goto inv_err;
 		if (unlikely(!hfi1_rkey_ok(qp, &sqp->s_sge.sge, wqe->length,
-					   wqe->wr.wr.rdma.remote_addr,
-					   wqe->wr.wr.rdma.rkey,
+					   wqe->rdma_wr.remote_addr,
+					   wqe->rdma_wr.rkey,
 					   IB_ACCESS_REMOTE_READ)))
 			goto acc_err;
 		release = 0;
@@ -512,18 +494,18 @@ again:
 		if (unlikely(!(qp->qp_access_flags & IB_ACCESS_REMOTE_ATOMIC)))
 			goto inv_err;
 		if (unlikely(!hfi1_rkey_ok(qp, &qp->r_sge.sge, sizeof(u64),
-					   wqe->wr.wr.atomic.remote_addr,
-					   wqe->wr.wr.atomic.rkey,
+					   wqe->atomic_wr.remote_addr,
+					   wqe->atomic_wr.rkey,
 					   IB_ACCESS_REMOTE_ATOMIC)))
 			goto acc_err;
 		/* Perform atomic OP and save result. */
 		maddr = (atomic64_t *) qp->r_sge.sge.vaddr;
-		sdata = wqe->wr.wr.atomic.compare_add;
+		sdata = wqe->atomic_wr.compare_add;
 		*(u64 *) sqp->s_sge.sge.vaddr =
 			(wqe->wr.opcode == IB_WR_ATOMIC_FETCH_AND_ADD) ?
 			(u64) atomic64_add_return(sdata, maddr) - sdata :
 			(u64) cmpxchg((u64 *) qp->r_sge.sge.vaddr,
-				      sdata, wqe->wr.wr.atomic.swap);
+				      sdata, wqe->atomic_wr.swap);
 		hfi1_put_mr(qp->r_sge.sge.mr);
 		qp->r_sge.num_sge = 0;
 		goto send_comp;
@@ -695,19 +677,6 @@ u32 hfi1_make_grh(struct hfi1_ibport *ibp, struct ib_grh *hdr,
 	return sizeof(struct ib_grh) / sizeof(u32);
 }
 
-/*
- * free_ahg - clear ahg from QP
- */
-void clear_ahg(struct hfi1_qp *qp)
-{
-	qp->s_hdr->ahgcount = 0;
-	qp->s_flags &= ~(HFI1_S_AHG_VALID | HFI1_S_AHG_CLEAR);
-	if (qp->s_sde)
-		sdma_ahg_free(qp->s_sde, qp->s_ahgidx);
-	qp->s_ahgidx = -1;
-	qp->s_sde = NULL;
-}
-
 #define BTH2_OFFSET (offsetof(struct hfi1_pio_header, hdr.u.oth.bth[2]) / 4)
 
 /**
@@ -727,11 +696,8 @@ static inline void build_ahg(struct hfi1_qp *qp, u32 npsn)
 		clear_ahg(qp);
 	if (!(qp->s_flags & HFI1_S_AHG_VALID)) {
 		/* first middle that needs copy  */
-		if (qp->s_ahgidx < 0) {
-			if (!qp->s_sde)
-				qp->s_sde = qp_to_sdma_engine(qp, qp->s_sc);
+		if (qp->s_ahgidx < 0)
 			qp->s_ahgidx = sdma_ahg_alloc(qp->s_sde);
-		}
 		if (qp->s_ahgidx >= 0) {
 			qp->s_ahgpsn = npsn;
 			qp->s_hdr->tx_flags |= SDMA_TXREQ_F_AHG_COPY;
@@ -774,7 +740,6 @@ void hfi1_make_ruc_header(struct hfi1_qp *qp, struct hfi1_other_headers *ohdr,
 	u16 lrh0;
 	u32 nwords;
 	u32 extra_bytes;
-	u8 sc5;
 	u32 bth1;
 
 	/* Construct the header. */
@@ -788,9 +753,7 @@ void hfi1_make_ruc_header(struct hfi1_qp *qp, struct hfi1_other_headers *ohdr,
 		lrh0 = HFI1_LRH_GRH;
 		middle = 0;
 	}
-	sc5 = ibp->sl_to_sc[qp->remote_ah_attr.sl];
-	lrh0 |= (sc5 & 0xf) << 12 | (qp->remote_ah_attr.sl & 0xf) << 4;
-	qp->s_sc = sc5;
+	lrh0 |= (qp->s_sc & 0xf) << 12 | (qp->remote_ah_attr.sl & 0xf) << 4;
 	/*
 	 * reset s_hdr/AHG fields
 	 *
@@ -833,6 +796,9 @@ void hfi1_make_ruc_header(struct hfi1_qp *qp, struct hfi1_other_headers *ohdr,
 	ohdr->bth[2] = cpu_to_be32(bth2);
 }
 
+/* when sending, force a reschedule every one of these periods */
+#define SEND_RESCHED_TIMEOUT (5 * HZ)  /* 5s in jiffies */
+
 /**
  * hfi1_do_send - perform a send on a QP
  * @work: contains a pointer to the QP
@@ -845,15 +811,20 @@ void hfi1_do_send(struct work_struct *work)
 {
 	struct iowait *wait = container_of(work, struct iowait, iowork);
 	struct hfi1_qp *qp = container_of(wait, struct hfi1_qp, s_iowait);
-	struct hfi1_ibport *ibp = to_iport(qp->ibqp.device, qp->port_num);
-	struct hfi1_pportdata *ppd = ppd_from_ibp(ibp);
+	struct hfi1_pkt_state ps;
 	int (*make_req)(struct hfi1_qp *qp);
 	unsigned long flags;
+	unsigned long timeout;
+
+	ps.dev = to_idev(qp->ibqp.device);
+	ps.ibp = to_iport(qp->ibqp.device, qp->port_num);
+	ps.ppd = ppd_from_ibp(ps.ibp);
 
 	if ((qp->ibqp.qp_type == IB_QPT_RC ||
 	     qp->ibqp.qp_type == IB_QPT_UC) &&
 	    !loopback &&
-	    (qp->remote_ah_attr.dlid & ~((1 << ppd->lmc) - 1)) == ppd->lid) {
+	    (qp->remote_ah_attr.dlid & ~((1 << ps.ppd->lmc) - 1)) ==
+	    ps.ppd->lid) {
 		ruc_loopback(qp);
 		return;
 	}
@@ -877,6 +848,7 @@ void hfi1_do_send(struct work_struct *work)
 
 	spin_unlock_irqrestore(&qp->s_lock, flags);
 
+	timeout = jiffies + SEND_RESCHED_TIMEOUT;
 	do {
 		/* Check for a constructed packet to be sent. */
 		if (qp->s_hdrwords != 0) {
@@ -884,11 +856,17 @@ void hfi1_do_send(struct work_struct *work)
 			 * If the packet cannot be sent now, return and
 			 * the send tasklet will be woken up later.
 			 */
-			if (hfi1_verbs_send(qp, qp->s_hdr, qp->s_hdrwords,
-					    qp->s_cur_sge, qp->s_cur_size))
+			if (hfi1_verbs_send(qp, &ps))
 				break;
 			/* Record that s_hdr is empty. */
 			qp->s_hdrwords = 0;
+		}
+
+		/* allow other tasks to run */
+		if (unlikely(time_after(jiffies, timeout))) {
+			cond_resched();
+			ps.ppd->dd->verbs_dev.n_send_schedule++;
+			timeout = jiffies + SEND_RESCHED_TIMEOUT;
 		}
 	} while (make_req(qp));
 }
@@ -913,7 +891,7 @@ void hfi1_send_complete(struct hfi1_qp *qp, struct hfi1_swqe *wqe,
 	if (qp->ibqp.qp_type == IB_QPT_UD ||
 	    qp->ibqp.qp_type == IB_QPT_SMI ||
 	    qp->ibqp.qp_type == IB_QPT_GSI)
-		atomic_dec(&to_iah(wqe->wr.wr.ud.ah)->refcount);
+		atomic_dec(&to_iah(wqe->ud_wr.ah)->refcount);
 
 	/* See ch. 11.2.4.1 and 10.7.3.1 */
 	if (!(qp->s_flags & HFI1_S_SIGNAL_REQ_WR) ||

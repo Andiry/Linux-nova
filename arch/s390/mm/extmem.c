@@ -18,6 +18,7 @@
 #include <linux/bootmem.h>
 #include <linux/ctype.h>
 #include <linux/ioport.h>
+#include <asm/diag.h>
 #include <asm/page.h>
 #include <asm/pgtable.h>
 #include <asm/ebcdic.h>
@@ -93,7 +94,7 @@ static DEFINE_MUTEX(dcss_lock);
 static LIST_HEAD(dcss_list);
 static char *segtype_string[] = { "SW", "EW", "SR", "ER", "SN", "EN", "SC",
 					"EW/EN-MIXED" };
-static int loadshr_scode, loadnsr_scode, findseg_scode;
+static int loadshr_scode, loadnsr_scode;
 static int segext_scode, purgeseg_scode;
 static int scode_set;
 
@@ -112,6 +113,7 @@ dcss_set_subcodes(void)
 	ry = DCSS_FINDSEGX;
 
 	strcpy(name, "dummy");
+	diag_stat_inc(DIAG_STAT_X064);
 	asm volatile(
 		"	diag	%0,%1,0x64\n"
 		"0:	ipm	%2\n"
@@ -128,7 +130,6 @@ dcss_set_subcodes(void)
 		loadshr_scode = DCSS_LOADSHRX;
 		loadnsr_scode = DCSS_LOADNSRX;
 		purgeseg_scode = DCSS_PURGESEG;
-		findseg_scode = DCSS_FINDSEGX;
 		segext_scode = DCSS_SEGEXTX;
 		return 0;
 	}
@@ -136,7 +137,6 @@ dcss_set_subcodes(void)
 	loadshr_scode = DCSS_LOADNOLY;
 	loadnsr_scode = DCSS_LOADNSR;
 	purgeseg_scode = DCSS_PURGESEG;
-	findseg_scode = DCSS_FINDSEG;
 	segext_scode = DCSS_SEGEXT;
 	return 0;
 }
@@ -205,6 +205,7 @@ dcss_diag(int *func, void *parameter,
 	ry = (unsigned long) *func;
 
 	/* 64-bit Diag x'64' new subcode, keep in 64-bit addressing mode */
+	diag_stat_inc(DIAG_STAT_X064);
 	if (*func > DCSS_SEGEXT)
 		asm volatile(
 			"	diag	%0,%1,0x64\n"

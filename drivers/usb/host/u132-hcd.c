@@ -73,7 +73,7 @@ MODULE_LICENSE("GPL");
 #define INT_MODULE_PARM(n, v) static int n = v;module_param(n, int, 0444)
 INT_MODULE_PARM(testing, 0);
 /* Some boards misreport power switching/overcurrent*/
-static bool distrust_firmware = 1;
+static bool distrust_firmware = true;
 module_param(distrust_firmware, bool, 0);
 MODULE_PARM_DESC(distrust_firmware, "true to distrust firmware power/overcurren"
 	"t setup");
@@ -2244,9 +2244,8 @@ static int u132_urb_enqueue(struct usb_hcd *hcd, struct urb *urb,
 {
 	struct u132 *u132 = hcd_to_u132(hcd);
 	if (irqs_disabled()) {
-		if (__GFP_WAIT & mem_flags) {
-			printk(KERN_ERR "invalid context for function that migh"
-				"t sleep\n");
+		if (gfpflags_allow_blocking(mem_flags)) {
+			printk(KERN_ERR "invalid context for function that might sleep\n");
 			return -EINVAL;
 		}
 	}

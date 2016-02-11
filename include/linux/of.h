@@ -126,6 +126,8 @@ extern raw_spinlock_t devtree_lock;
 #define OF_POPULATED	3 /* device already created for the node */
 #define OF_POPULATED_BUS	4 /* of_platform_populate recursed to children of this node */
 
+#define OF_BAD_ADDR	((u64)-1)
+
 #ifdef CONFIG_OF
 void of_core_init(void);
 
@@ -228,8 +230,6 @@ static inline unsigned long of_read_ulong(const __be32 *cell, int size)
 
 #define OF_IS_DYNAMIC(x) test_bit(OF_DYNAMIC, &x->_flags)
 #define OF_MARK_DYNAMIC(x) set_bit(OF_DYNAMIC, &x->_flags)
-
-#define OF_BAD_ADDR	((u64)-1)
 
 static inline const char *of_node_full_name(const struct device_node *np)
 {
@@ -929,7 +929,7 @@ static inline int of_get_available_child_count(const struct device_node *np)
 	return num;
 }
 
-#ifdef CONFIG_OF
+#if defined(CONFIG_OF) && !defined(MODULE)
 #define _OF_DECLARE(table, name, compat, fn, fn_type)			\
 	static const struct of_device_id __of_table_##name		\
 		__used __section(__##table##_of_table)			\

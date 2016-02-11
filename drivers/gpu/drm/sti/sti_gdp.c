@@ -492,7 +492,7 @@ static void sti_gdp_atomic_update(struct drm_plane *drm_plane,
 		/* Register gdp callback */
 		if (sti_vtg_register_client(mixer->id == STI_MIXER_MAIN ?
 				compo->vtg_main : compo->vtg_aux,
-				&gdp->vtg_field_nb, mixer->id)) {
+				&gdp->vtg_field_nb, crtc)) {
 			DRM_ERROR("Cannot register VTG notifier\n");
 			return;
 		}
@@ -630,7 +630,7 @@ struct drm_plane *sti_gdp_create(struct drm_device *drm_dev,
 				       &sti_plane_helpers_funcs,
 				       gdp_supported_formats,
 				       ARRAY_SIZE(gdp_supported_formats),
-				       type);
+				       type, NULL);
 	if (res) {
 		DRM_ERROR("Failed to initialize universal plane\n");
 		goto err;

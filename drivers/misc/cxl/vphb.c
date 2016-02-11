@@ -203,7 +203,7 @@ static int cxl_pcie_write_config(struct pci_bus *bus, unsigned int devfn,
 	mask <<= shift;
 	val <<= shift;
 
-	v = (in_le32(ioaddr) & ~mask) || (val & mask);
+	v = (in_le32(ioaddr) & ~mask) | (val & mask);
 
 	out_le32(ioaddr, v);
 	return PCIBIOS_SUCCESSFUL;
@@ -290,8 +290,10 @@ void cxl_pci_vphb_remove(struct cxl_afu *afu)
 		return;
 
 	phb = afu->phb;
+	afu->phb = NULL;
 
 	pci_remove_root_bus(phb->bus);
+	pcibios_free_controller(phb);
 }
 
 struct cxl_afu *cxl_pci_to_afu(struct pci_dev *dev)

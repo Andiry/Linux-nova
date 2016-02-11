@@ -27,7 +27,7 @@
  * Copyright (c) 2007, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
  *
- * Copyright (c) 2011, 2012, Intel Corporation.
+ * Copyright (c) 2011, 2015, Intel Corporation.
  */
 /*
  * This file is part of Lustre, http://www.lustre.org/
@@ -201,7 +201,6 @@ lnet_connect(struct socket **sockp, lnet_nid_t peer_nid,
 	return rc;
 }
 EXPORT_SYMBOL(lnet_connect);
-
 
 /* Below is the code common for both kernel and MT user-space */
 
@@ -446,7 +445,6 @@ lnet_acceptor_start(void)
 	rc = lnet_acceptor_get_tunables();
 	if (rc != 0)
 		return rc;
-
 
 	init_completion(&lnet_acceptor_state.pta_signal);
 	rc = accept2secure(accept_type, &secure);

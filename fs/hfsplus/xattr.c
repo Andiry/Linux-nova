@@ -431,9 +431,6 @@ int hfsplus_setxattr(struct dentry *dentry, const char *name,
 	char *xattr_name;
 	int res;
 
-	if (!strcmp(name, ""))
-		return -EINVAL;
-
 	xattr_name = kmalloc(NLS_MAX_CHARSET_SIZE * HFSPLUS_ATTR_MAX_STRLEN + 1,
 		GFP_KERNEL);
 	if (!xattr_name)
@@ -588,9 +585,6 @@ ssize_t hfsplus_getxattr(struct dentry *dentry, const char *name,
 {
 	int res;
 	char *xattr_name;
-
-	if (!strcmp(name, ""))
-		return -EINVAL;
 
 	xattr_name = kmalloc(NLS_MAX_CHARSET_SIZE * HFSPLUS_ATTR_MAX_STRLEN + 1,
 			     GFP_KERNEL);
@@ -849,12 +843,10 @@ end_removexattr:
 	return err;
 }
 
-static int hfsplus_osx_getxattr(struct dentry *dentry, const char *name,
-					void *buffer, size_t size, int type)
+static int hfsplus_osx_getxattr(const struct xattr_handler *handler,
+				struct dentry *dentry, const char *name,
+				void *buffer, size_t size)
 {
-	if (!strcmp(name, ""))
-		return -EINVAL;
-
 	/*
 	 * Don't allow retrieving properly prefixed attributes
 	 * by prepending them with "osx."
@@ -871,12 +863,10 @@ static int hfsplus_osx_getxattr(struct dentry *dentry, const char *name,
 	return __hfsplus_getxattr(d_inode(dentry), name, buffer, size);
 }
 
-static int hfsplus_osx_setxattr(struct dentry *dentry, const char *name,
-		const void *buffer, size_t size, int flags, int type)
+static int hfsplus_osx_setxattr(const struct xattr_handler *handler,
+				struct dentry *dentry, const char *name,
+				const void *buffer, size_t size, int flags)
 {
-	if (!strcmp(name, ""))
-		return -EINVAL;
-
 	/*
 	 * Don't allow setting properly prefixed attributes
 	 * by prepending them with "osx."
@@ -893,19 +883,8 @@ static int hfsplus_osx_setxattr(struct dentry *dentry, const char *name,
 	return __hfsplus_setxattr(d_inode(dentry), name, buffer, size, flags);
 }
 
-static size_t hfsplus_osx_listxattr(struct dentry *dentry, char *list,
-		size_t list_size, const char *name, size_t name_len, int type)
-{
-	/*
-	 * This method is not used.
-	 * It is used hfsplus_listxattr() instead of generic_listxattr().
-	 */
-	return -EOPNOTSUPP;
-}
-
 const struct xattr_handler hfsplus_xattr_osx_handler = {
 	.prefix	= XATTR_MAC_OSX_PREFIX,
-	.list	= hfsplus_osx_listxattr,
 	.get	= hfsplus_osx_getxattr,
 	.set	= hfsplus_osx_setxattr,
 };

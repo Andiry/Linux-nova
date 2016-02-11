@@ -53,6 +53,8 @@ struct ovs_conntrack_info {
 	struct md_labels labels;
 };
 
+static void __ovs_ct_free_action(struct ovs_conntrack_info *ct_info);
+
 static u16 key_to_nfproto(const struct sw_flow_key *key)
 {
 	switch (ntohs(key->eth.type)) {
@@ -141,6 +143,7 @@ static void __ovs_ct_update_key(struct sw_flow_key *key, u8 state,
  * previously sent the packet to conntrack via the ct action.
  */
 static void ovs_ct_update_key(const struct sk_buff *skb,
+			      const struct ovs_conntrack_info *info,
 			      struct sw_flow_key *key, bool post_ct)
 {
 	const struct nf_conntrack_zone *zone = &nf_ct_zone_dflt;
@@ -151,18 +154,22 @@ static void ovs_ct_update_key(const struct sk_buff *skb,
 	ct = nf_ct_get(skb, &ctinfo);
 	if (ct) {
 		state = ovs_ct_get_state(ctinfo);
+		if (!nf_ct_is_confirmed(ct))
+			state |= OVS_CS_F_NEW;
 		if (ct->master)
 			state |= OVS_CS_F_RELATED;
 		zone = nf_ct_zone(ct);
 	} else if (post_ct) {
 		state = OVS_CS_F_TRACKED | OVS_CS_F_INVALID;
+		if (info)
+			zone = &info->zone;
 	}
 	__ovs_ct_update_key(key, state, zone, ct);
 }
 
 void ovs_ct_fill_key(const struct sk_buff *skb, struct sw_flow_key *key)
 {
-	ovs_ct_update_key(skb, key, false);
+	ovs_ct_update_key(skb, NULL, key, false);
 }
 
 int ovs_ct_put_key(const struct sw_flow_key *key, struct sk_buff *skb)
@@ -221,9 +228,6 @@ static int ovs_ct_set_labels(struct sk_buff *skb, struct sw_flow_key *key,
 	struct nf_conn_labels *cl;
 	struct nf_conn *ct;
 	int err;
-
-	if (!IS_ENABLED(CONFIG_NF_CONNTRACK_LABELS))
-		return -ENOTSUPP;
 
 	/* The connection could be invalid, in which case set_label is no-op.*/
 	ct = nf_ct_get(skb, &ctinfo);
@@ -294,42 +298,38 @@ static int ovs_ct_helper(struct sk_buff *skb, u16 proto)
 	return helper->help(skb, protoff, ct, ctinfo);
 }
 
+/* Returns 0 on success, -EINPROGRESS if 'skb' is stolen, or other nonzero
+ * value if 'skb' is freed.
+ */
 static int handle_fragments(struct net *net, struct sw_flow_key *key,
 			    u16 zone, struct sk_buff *skb)
 {
 	struct ovs_skb_cb ovs_cb = *OVS_CB(skb);
+	int err;
 
 	if (key->eth.type == htons(ETH_P_IP)) {
 		enum ip_defrag_users user = IP_DEFRAG_CONNTRACK_IN + zone;
-		int err;
 
 		memset(IPCB(skb), 0, sizeof(struct inet_skb_parm));
-		err = ip_defrag(skb, user);
+		err = ip_defrag(net, skb, user);
 		if (err)
 			return err;
 
 		ovs_cb.mru = IPCB(skb)->frag_max_size;
-	} else if (key->eth.type == htons(ETH_P_IPV6)) {
 #if IS_ENABLED(CONFIG_NF_DEFRAG_IPV6)
+	} else if (key->eth.type == htons(ETH_P_IPV6)) {
 		enum ip6_defrag_users user = IP6_DEFRAG_CONNTRACK_IN + zone;
-		struct sk_buff *reasm;
 
 		memset(IP6CB(skb), 0, sizeof(struct inet6_skb_parm));
-		reasm = nf_ct_frag6_gather(skb, user);
-		if (!reasm)
-			return -EINPROGRESS;
+		err = nf_ct_frag6_gather(net, skb, user);
+		if (err)
+			return err;
 
-		if (skb == reasm)
-			return -EINVAL;
-
-		key->ip.proto = ipv6_hdr(reasm)->nexthdr;
-		skb_morph(skb, reasm);
-		consume_skb(reasm);
+		key->ip.proto = ipv6_hdr(skb)->nexthdr;
 		ovs_cb.mru = IP6CB(skb)->frag_max_size;
-#else
-		return -EPFNOSUPPORT;
 #endif
 	} else {
+		kfree_skb(skb);
 		return -EPFNOSUPPORT;
 	}
 
@@ -347,7 +347,7 @@ ovs_ct_expect_find(struct net *net, const struct nf_conntrack_zone *zone,
 {
 	struct nf_conntrack_tuple tuple;
 
-	if (!nf_ct_get_tuplepr(skb, skb_network_offset(skb), proto, &tuple))
+	if (!nf_ct_get_tuplepr(skb, skb_network_offset(skb), proto, net, &tuple))
 		return NULL;
 	return __nf_ct_expect_find(net, zone, &tuple);
 }
@@ -377,7 +377,7 @@ static bool skb_nfct_cached(const struct net *net, const struct sk_buff *skb,
 	return true;
 }
 
-static int __ovs_ct_lookup(struct net *net, const struct sw_flow_key *key,
+static int __ovs_ct_lookup(struct net *net, struct sw_flow_key *key,
 			   const struct ovs_conntrack_info *info,
 			   struct sk_buff *skb)
 {
@@ -408,6 +408,8 @@ static int __ovs_ct_lookup(struct net *net, const struct sw_flow_key *key,
 		}
 	}
 
+	ovs_ct_update_key(skb, info, key, true);
+
 	return 0;
 }
 
@@ -430,8 +432,6 @@ static int ovs_ct_lookup(struct net *net, struct sw_flow_key *key,
 		err = __ovs_ct_lookup(net, key, info, skb);
 		if (err)
 			return err;
-
-		ovs_ct_update_key(skb, key, true);
 	}
 
 	return 0;
@@ -460,8 +460,6 @@ static int ovs_ct_commit(struct net *net, struct sw_flow_key *key,
 	if (nf_conntrack_confirm(skb) != NF_ACCEPT)
 		return -EINVAL;
 
-	ovs_ct_update_key(skb, key, true);
-
 	return 0;
 }
 
@@ -476,6 +474,9 @@ static bool labels_nonzero(const struct ovs_key_ct_labels *labels)
 	return false;
 }
 
+/* Returns 0 on success, -EINPROGRESS if 'skb' is stolen, or other nonzero
+ * value if 'skb' is freed.
+ */
 int ovs_ct_execute(struct net *net, struct sk_buff *skb,
 		   struct sw_flow_key *key,
 		   const struct ovs_conntrack_info *info)
@@ -511,6 +512,8 @@ int ovs_ct_execute(struct net *net, struct sk_buff *skb,
 					&info->labels.mask);
 err:
 	skb_push(skb, nh_ofs);
+	if (err)
+		kfree_skb(skb);
 	return err;
 }
 
@@ -587,6 +590,10 @@ static int parse_ct(const struct nlattr *attr, struct ovs_conntrack_info *info,
 		case OVS_CT_ATTR_MARK: {
 			struct md_mark *mark = nla_data(a);
 
+			if (!mark->mask) {
+				OVS_NLERR(log, "ct_mark mask cannot be 0");
+				return -EINVAL;
+			}
 			info->mark = *mark;
 			break;
 		}
@@ -595,6 +602,10 @@ static int parse_ct(const struct nlattr *attr, struct ovs_conntrack_info *info,
 		case OVS_CT_ATTR_LABELS: {
 			struct md_labels *labels = nla_data(a);
 
+			if (!labels_nonzero(&labels->mask)) {
+				OVS_NLERR(log, "ct_labels mask cannot be 0");
+				return -EINVAL;
+			}
 			info->labels = *labels;
 			break;
 		}
@@ -672,6 +683,10 @@ int ovs_ct_copy_action(struct net *net, const struct nlattr *attr,
 		OVS_NLERR(log, "Failed to allocate conntrack template");
 		return -ENOMEM;
 	}
+
+	__set_bit(IPS_CONFIRMED_BIT, &ct_info.ct->status);
+	nf_conntrack_get(&ct_info.ct->ct_general);
+
 	if (helper) {
 		err = ovs_ct_add_helper(&ct_info, helper, key, log);
 		if (err)
@@ -683,11 +698,9 @@ int ovs_ct_copy_action(struct net *net, const struct nlattr *attr,
 	if (err)
 		goto err_free_ct;
 
-	__set_bit(IPS_CONFIRMED_BIT, &ct_info.ct->status);
-	nf_conntrack_get(&ct_info.ct->ct_general);
 	return 0;
 err_free_ct:
-	nf_conntrack_free(ct_info.ct);
+	__ovs_ct_free_action(&ct_info);
 	return err;
 }
 
@@ -705,11 +718,12 @@ int ovs_ct_action_to_attr(const struct ovs_conntrack_info *ct_info,
 	if (IS_ENABLED(CONFIG_NF_CONNTRACK_ZONES) &&
 	    nla_put_u16(skb, OVS_CT_ATTR_ZONE, ct_info->zone.id))
 		return -EMSGSIZE;
-	if (IS_ENABLED(CONFIG_NF_CONNTRACK_MARK) &&
+	if (IS_ENABLED(CONFIG_NF_CONNTRACK_MARK) && ct_info->mark.mask &&
 	    nla_put(skb, OVS_CT_ATTR_MARK, sizeof(ct_info->mark),
 		    &ct_info->mark))
 		return -EMSGSIZE;
 	if (IS_ENABLED(CONFIG_NF_CONNTRACK_LABELS) &&
+	    labels_nonzero(&ct_info->labels.mask) &&
 	    nla_put(skb, OVS_CT_ATTR_LABELS, sizeof(ct_info->labels),
 		    &ct_info->labels))
 		return -EMSGSIZE;
@@ -728,6 +742,11 @@ void ovs_ct_free_action(const struct nlattr *a)
 {
 	struct ovs_conntrack_info *ct_info = nla_data(a);
 
+	__ovs_ct_free_action(ct_info);
+}
+
+static void __ovs_ct_free_action(struct ovs_conntrack_info *ct_info)
+{
 	if (ct_info->helper)
 		module_put(ct_info->helper->me);
 	if (ct_info->ct)

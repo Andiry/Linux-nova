@@ -282,15 +282,6 @@ lnet_eq_dequeue_event(lnet_eq_t *eq, lnet_event_t *ev)
  * at least one event between this event and the last event obtained from the
  * EQ has been dropped due to limited space in the EQ.
  */
-int
-LNetEQGet(lnet_handle_eq_t eventq, lnet_event_t *event)
-{
-	int which;
-
-	return LNetEQPoll(&eventq, 1, 0,
-			 event, &which);
-}
-EXPORT_SYMBOL(LNetEQGet);
 
 /**
  * Block the calling process until there is an event in the EQ.
@@ -308,16 +299,6 @@ EXPORT_SYMBOL(LNetEQGet);
  * at least one event between this event and the last event obtained from the
  * EQ has been dropped due to limited space in the EQ.
  */
-int
-LNetEQWait(lnet_handle_eq_t eventq, lnet_event_t *event)
-{
-	int which;
-
-	return LNetEQPoll(&eventq, 1, LNET_TIME_FOREVER,
-			 event, &which);
-}
-EXPORT_SYMBOL(LNetEQWait);
-
 
 static int
 lnet_eq_wait_locked(int *timeout_ms)
@@ -341,12 +322,9 @@ __must_hold(&the_lnet.ln_eq_wait_lock)
 		schedule();
 
 	} else {
-		struct timeval tv;
-
-		now = cfs_time_current();
-		schedule_timeout(cfs_time_seconds(tms) / 1000);
-		cfs_duration_usec(cfs_time_sub(cfs_time_current(), now), &tv);
-		tms -= (int)(tv.tv_sec * 1000 + tv.tv_usec / 1000);
+		now = jiffies;
+		schedule_timeout(msecs_to_jiffies(tms));
+		tms -= jiffies_to_msecs(jiffies - now);
 		if (tms < 0) /* no more wait but may have new event */
 			tms = 0;
 	}
@@ -359,8 +337,6 @@ __must_hold(&the_lnet.ln_eq_wait_lock)
 
 	return wait;
 }
-
-
 
 /**
  * Block the calling process until there's an event from a set of EQs or

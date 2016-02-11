@@ -229,7 +229,7 @@ config IMX_SDMA
 	  Support the i.MX SDMA engine. This engine is integrated into
 	  Freescale i.MX25/31/35/51/53/6 chips.
 
-config IDMA64
+config INTEL_IDMA64
 	tristate "Intel integrated DMA 64-bit support"
 	select DMA_ENGINE
 	select DMA_VIRTUAL_CHANNELS
@@ -431,8 +431,20 @@ config STE_DMA40
 	help
 	  Support for ST-Ericsson DMA40 controller
 
+config STM32_DMA
+	bool "STMicroelectronics STM32 DMA support"
+	depends on ARCH_STM32
+	select DMA_ENGINE
+	select DMA_OF
+	select DMA_VIRTUAL_CHANNELS
+	help
+	  Enable support for the on-chip DMA controller on STMicroelectronics
+	  STM32 MCUs.
+	  If you have a board based on such a MCU and wish to use DMA say Y or M
+	  here.
+
 config S3C24XX_DMAC
-	tristate "Samsung S3C24XX DMA support"
+	bool "Samsung S3C24XX DMA support"
 	depends on ARCH_S3C24XX
 	select DMA_ENGINE
 	select DMA_VIRTUAL_CHANNELS
@@ -486,7 +498,7 @@ config TI_EDMA
 	depends on ARCH_DAVINCI || ARCH_OMAP || ARCH_KEYSTONE
 	select DMA_ENGINE
 	select DMA_VIRTUAL_CHANNELS
-	select TI_PRIV_EDMA
+	select TI_DMA_CROSSBAR if ARCH_OMAP
 	default n
 	help
 	  Enable support for the TI EDMA controller. This DMA

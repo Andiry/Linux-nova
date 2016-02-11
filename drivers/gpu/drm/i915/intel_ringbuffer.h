@@ -100,6 +100,7 @@ struct intel_ringbuffer {
 	void __iomem *virtual_start;
 
 	struct intel_engine_cs *ring;
+	struct list_head link;
 
 	u32 head;
 	u32 tail;
@@ -157,6 +158,7 @@ struct  intel_engine_cs {
 	u32		mmio_base;
 	struct		drm_device *dev;
 	struct intel_ringbuffer *buffer;
+	struct list_head buffers;
 
 	/*
 	 * A pool of objects to use as shadow copies of client batch buffers
@@ -247,7 +249,7 @@ struct  intel_engine_cs {
 				/* our mbox written by others */
 				u32		wait[I915_NUM_RINGS];
 				/* mboxes this ring signals to */
-				u32		signal[I915_NUM_RINGS];
+				i915_reg_t	signal[I915_NUM_RINGS];
 			} mbox;
 			u64		signal_ggtt[I915_NUM_RINGS];
 		};
@@ -348,7 +350,11 @@ struct  intel_engine_cs {
 	u32 (*get_cmd_length_mask)(u32 cmd_header);
 };
 
-bool intel_ring_initialized(struct intel_engine_cs *ring);
+static inline bool
+intel_ring_initialized(struct intel_engine_cs *ring)
+{
+	return ring->dev != NULL;
+}
 
 static inline unsigned
 intel_ring_flag(struct intel_engine_cs *ring)
@@ -375,6 +381,13 @@ intel_ring_sync_index(struct intel_engine_cs *ring,
 		idx += I915_NUM_RINGS;
 
 	return idx;
+}
+
+static inline void
+intel_flush_status_page(struct intel_engine_cs *ring, int reg)
+{
+	drm_clflush_virt_range(&ring->status_page.page_addr[reg],
+			       sizeof(uint32_t));
 }
 
 static inline u32
@@ -413,12 +426,12 @@ intel_write_status_page(struct intel_engine_cs *ring,
 #define I915_GEM_HWS_SCRATCH_INDEX	0x40
 #define I915_GEM_HWS_SCRATCH_ADDR (I915_GEM_HWS_SCRATCH_INDEX << MI_STORE_DWORD_INDEX_SHIFT)
 
-void intel_unpin_ringbuffer_obj(struct intel_ringbuffer *ringbuf);
+struct intel_ringbuffer *
+intel_engine_create_ringbuffer(struct intel_engine_cs *engine, int size);
 int intel_pin_and_map_ringbuffer_obj(struct drm_device *dev,
 				     struct intel_ringbuffer *ringbuf);
-void intel_destroy_ringbuffer_obj(struct intel_ringbuffer *ringbuf);
-int intel_alloc_ringbuffer_obj(struct drm_device *dev,
-			       struct intel_ringbuffer *ringbuf);
+void intel_unpin_ringbuffer_obj(struct intel_ringbuffer *ringbuf);
+void intel_ringbuffer_free(struct intel_ringbuffer *ring);
 
 void intel_stop_ring_buffer(struct intel_engine_cs *ring);
 void intel_cleanup_ring_buffer(struct intel_engine_cs *ring);
@@ -433,6 +446,11 @@ static inline void intel_ring_emit(struct intel_engine_cs *ring,
 	struct intel_ringbuffer *ringbuf = ring->buffer;
 	iowrite32(data, ringbuf->virtual_start + ringbuf->tail);
 	ringbuf->tail += 4;
+}
+static inline void intel_ring_emit_reg(struct intel_engine_cs *ring,
+				       i915_reg_t reg)
+{
+	intel_ring_emit(ring, i915_mmio_reg_offset(reg));
 }
 static inline void intel_ring_advance(struct intel_engine_cs *ring)
 {

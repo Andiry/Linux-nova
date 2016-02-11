@@ -510,10 +510,11 @@ int intel_pmu_drain_bts_buffer(void)
 		u64	flags;
 	};
 	struct perf_event *event = cpuc->events[INTEL_PMC_IDX_FIXED_BTS];
-	struct bts_record *at, *top;
+	struct bts_record *at, *base, *top;
 	struct perf_output_handle handle;
 	struct perf_event_header header;
 	struct perf_sample_data data;
+	unsigned long skip = 0;
 	struct pt_regs regs;
 
 	if (!event)
@@ -522,10 +523,10 @@ int intel_pmu_drain_bts_buffer(void)
 	if (!x86_pmu.bts_active)
 		return 0;
 
-	at  = (struct bts_record *)(unsigned long)ds->bts_buffer_base;
-	top = (struct bts_record *)(unsigned long)ds->bts_index;
+	base = (struct bts_record *)(unsigned long)ds->bts_buffer_base;
+	top  = (struct bts_record *)(unsigned long)ds->bts_index;
 
-	if (top <= at)
+	if (top <= base)
 		return 0;
 
 	memset(&regs, 0, sizeof(regs));
@@ -535,16 +536,43 @@ int intel_pmu_drain_bts_buffer(void)
 	perf_sample_data_init(&data, 0, event->hw.last_period);
 
 	/*
+	 * BTS leaks kernel addresses in branches across the cpl boundary,
+	 * such as traps or system calls, so unless the user is asking for
+	 * kernel tracing (and right now it's not possible), we'd need to
+	 * filter them out. But first we need to count how many of those we
+	 * have in the current batch. This is an extra O(n) pass, however,
+	 * it's much faster than the other one especially considering that
+	 * n <= 2560 (BTS_BUFFER_SIZE / BTS_RECORD_SIZE * 15/16; see the
+	 * alloc_bts_buffer()).
+	 */
+	for (at = base; at < top; at++) {
+		/*
+		 * Note that right now *this* BTS code only works if
+		 * attr::exclude_kernel is set, but let's keep this extra
+		 * check here in case that changes.
+		 */
+		if (event->attr.exclude_kernel &&
+		    (kernel_ip(at->from) || kernel_ip(at->to)))
+			skip++;
+	}
+
+	/*
 	 * Prepare a generic sample, i.e. fill in the invariant fields.
 	 * We will overwrite the from and to address before we output
 	 * the sample.
 	 */
 	perf_prepare_sample(&header, &data, event, &regs);
 
-	if (perf_output_begin(&handle, event, header.size * (top - at)))
+	if (perf_output_begin(&handle, event, header.size *
+			      (top - base - skip)))
 		return 1;
 
-	for (; at < top; at++) {
+	for (at = base; at < top; at++) {
+		/* Filter out any records that contain kernel addresses. */
+		if (event->attr.exclude_kernel &&
+		    (kernel_ip(at->from) || kernel_ip(at->to)))
+			continue;
+
 		data.ip		= at->from;
 		data.addr	= at->to;
 
@@ -592,6 +620,8 @@ struct event_constraint intel_atom_pebs_event_constraints[] = {
 	INTEL_FLAGS_EVENT_CONSTRAINT(0xcb, 0x1),    /* MEM_LOAD_RETIRED.* */
 	/* INST_RETIRED.ANY_P, inv=1, cmask=16 (cycles:p). */
 	INTEL_FLAGS_EVENT_CONSTRAINT(0x108000c0, 0x01),
+	/* Allow all events as PEBS with no flags */
+	INTEL_ALL_EVENT_CONSTRAINT(0, 0x1),
 	EVENT_CONSTRAINT_END
 };
 
@@ -658,6 +688,8 @@ struct event_constraint intel_ivb_pebs_event_constraints[] = {
 	INTEL_PST_CONSTRAINT(0x02cd, 0x8),    /* MEM_TRANS_RETIRED.PRECISE_STORES */
 	/* UOPS_RETIRED.ALL, inv=1, cmask=16 (cycles:p). */
 	INTEL_FLAGS_EVENT_CONSTRAINT(0x108001c2, 0xf),
+	/* INST_RETIRED.PREC_DIST, inv=1, cmask=16 (cycles:ppp). */
+	INTEL_FLAGS_EVENT_CONSTRAINT(0x108001c0, 0x2),
 	INTEL_EXCLEVT_CONSTRAINT(0xd0, 0xf),    /* MEM_UOP_RETIRED.* */
 	INTEL_EXCLEVT_CONSTRAINT(0xd1, 0xf),    /* MEM_LOAD_UOPS_RETIRED.* */
 	INTEL_EXCLEVT_CONSTRAINT(0xd2, 0xf),    /* MEM_LOAD_UOPS_LLC_HIT_RETIRED.* */
@@ -672,6 +704,8 @@ struct event_constraint intel_hsw_pebs_event_constraints[] = {
 	INTEL_PLD_CONSTRAINT(0x01cd, 0xf),    /* MEM_TRANS_RETIRED.* */
 	/* UOPS_RETIRED.ALL, inv=1, cmask=16 (cycles:p). */
 	INTEL_FLAGS_EVENT_CONSTRAINT(0x108001c2, 0xf),
+	/* INST_RETIRED.PREC_DIST, inv=1, cmask=16 (cycles:ppp). */
+	INTEL_FLAGS_EVENT_CONSTRAINT(0x108001c0, 0x2),
 	INTEL_FLAGS_UEVENT_CONSTRAINT_DATALA_NA(0x01c2, 0xf), /* UOPS_RETIRED.ALL */
 	INTEL_FLAGS_UEVENT_CONSTRAINT_DATALA_XLD(0x11d0, 0xf), /* MEM_UOPS_RETIRED.STLB_MISS_LOADS */
 	INTEL_FLAGS_UEVENT_CONSTRAINT_DATALA_XLD(0x21d0, 0xf), /* MEM_UOPS_RETIRED.LOCK_LOADS */
@@ -690,9 +724,10 @@ struct event_constraint intel_hsw_pebs_event_constraints[] = {
 
 struct event_constraint intel_skl_pebs_event_constraints[] = {
 	INTEL_FLAGS_UEVENT_CONSTRAINT(0x1c0, 0x2),	/* INST_RETIRED.PREC_DIST */
-	INTEL_FLAGS_UEVENT_CONSTRAINT_DATALA_NA(0x01c2, 0xf), /* UOPS_RETIRED.ALL */
-	/* UOPS_RETIRED.ALL, inv=1, cmask=16 (cycles:p). */
-	INTEL_FLAGS_EVENT_CONSTRAINT(0x108001c2, 0xf),
+	/* INST_RETIRED.PREC_DIST, inv=1, cmask=16 (cycles:ppp). */
+	INTEL_FLAGS_EVENT_CONSTRAINT(0x108001c0, 0x2),
+	/* INST_RETIRED.TOTAL_CYCLES_PS (inv=1, cmask=16) (cycles:p). */
+	INTEL_FLAGS_EVENT_CONSTRAINT(0x108000c0, 0x0f),
 	INTEL_PLD_CONSTRAINT(0x1cd, 0xf),		      /* MEM_TRANS_RETIRED.* */
 	INTEL_FLAGS_UEVENT_CONSTRAINT_DATALA_LD(0x11d0, 0xf), /* MEM_INST_RETIRED.STLB_MISS_LOADS */
 	INTEL_FLAGS_UEVENT_CONSTRAINT_DATALA_ST(0x12d0, 0xf), /* MEM_INST_RETIRED.STLB_MISS_STORES */
@@ -1073,6 +1108,13 @@ get_next_pebs_record_by_bit(void *base, void *top, int bit)
 	void *at;
 	u64 pebs_status;
 
+	/*
+	 * fmt0 does not have a status bitfield (does not use
+	 * perf_record_nhm format)
+	 */
+	if (x86_pmu.intel_cap.pebs_format < 1)
+		return base;
+
 	if (base == NULL)
 		return NULL;
 
@@ -1158,7 +1200,7 @@ static void intel_pmu_drain_pebs_core(struct pt_regs *iregs)
 	if (!event->attr.precise_ip)
 		return;
 
-	n = (top - at) / x86_pmu.pebs_record_size;
+	n = top - at;
 	if (n <= 0)
 		return;
 
@@ -1202,12 +1244,21 @@ static void intel_pmu_drain_pebs_nhm(struct pt_regs *iregs)
 		pebs_status = p->status & cpuc->pebs_enabled;
 		pebs_status &= (1ULL << x86_pmu.max_pebs_events) - 1;
 
+		/*
+		 * On some CPUs the PEBS status can be zero when PEBS is
+		 * racing with clearing of GLOBAL_STATUS.
+		 *
+		 * Normally we would drop that record, but in the
+		 * case when there is only a single active PEBS event
+		 * we can assume it's for that event.
+		 */
+		if (!pebs_status && cpuc->pebs_enabled &&
+			!(cpuc->pebs_enabled & (cpuc->pebs_enabled-1)))
+			pebs_status = cpuc->pebs_enabled;
+
 		bit = find_first_bit((unsigned long *)&pebs_status,
 					x86_pmu.max_pebs_events);
-		if (WARN(bit >= x86_pmu.max_pebs_events,
-			 "PEBS record without PEBS event! status=%Lx pebs_enabled=%Lx active_mask=%Lx",
-			 (unsigned long long)p->status, (unsigned long long)cpuc->pebs_enabled,
-			 *(unsigned long long *)cpuc->active_mask))
+		if (bit >= x86_pmu.max_pebs_events)
 			continue;
 
 		/*

@@ -55,6 +55,7 @@
 #include <linux/bitops.h>
 #include <linux/timer.h>
 #include <linux/vmalloc.h>
+#include <linux/highmem.h>
 
 #include "hfi.h"
 #include "common.h"
@@ -64,7 +65,8 @@
 #include "trace.h"
 
 /* must be a power of 2 >= 64 <= 32768 */
-#define SDMA_DESCQ_CNT 1024
+#define SDMA_DESCQ_CNT 2048
+#define SDMA_DESC_INTR 64
 #define INVALID_TAIL 0xffff
 
 static uint sdma_descq_cnt = SDMA_DESCQ_CNT;
@@ -78,6 +80,10 @@ MODULE_PARM_DESC(sdma_idle_cnt, "sdma interrupt idle delay (ns,default 250)");
 uint mod_num_sdma;
 module_param_named(num_sdma, mod_num_sdma, uint, S_IRUGO);
 MODULE_PARM_DESC(num_sdma, "Set max number SDMA engines to use");
+
+static uint sdma_desct_intr = SDMA_DESC_INTR;
+module_param_named(desct_intr, sdma_desct_intr, uint, S_IRUGO | S_IWUSR);
+MODULE_PARM_DESC(desct_intr, "Number of SDMA descriptor before interrupt");
 
 #define SDMA_WAIT_BATCH_SIZE 20
 /* max wait time for a SDMA engine to indicate it has halted */
@@ -230,7 +236,6 @@ static void sdma_hw_clean_up_task(unsigned long);
 static void sdma_put(struct sdma_state *);
 static void sdma_set_state(struct sdma_engine *, enum sdma_states);
 static void sdma_start_hw_clean_up(struct sdma_engine *);
-static void sdma_start_sw_clean_up(struct sdma_engine *);
 static void sdma_sw_clean_up_task(unsigned long);
 static void sdma_sendctrl(struct sdma_engine *, unsigned);
 static void init_sdma_regs(struct sdma_engine *, u32, uint);
@@ -303,17 +308,26 @@ static void sdma_wait_for_packet_egress(struct sdma_engine *sde,
 	u64 off = 8 * sde->this_idx;
 	struct hfi1_devdata *dd = sde->dd;
 	int lcnt = 0;
+	u64 reg_prev;
+	u64 reg = 0;
 
 	while (1) {
-		u64 reg = read_csr(dd, off + SEND_EGRESS_SEND_DMA_STATUS);
+		reg_prev = reg;
+		reg = read_csr(dd, off + SEND_EGRESS_SEND_DMA_STATUS);
 
 		reg &= SDMA_EGRESS_PACKET_OCCUPANCY_SMASK;
 		reg >>= SDMA_EGRESS_PACKET_OCCUPANCY_SHIFT;
 		if (reg == 0)
 			break;
-		if (lcnt++ > 100) {
-			dd_dev_err(dd, "%s: engine %u timeout waiting for packets to egress, remaining count %u\n",
+		/* counter is reest if accupancy count changes */
+		if (reg != reg_prev)
+			lcnt = 0;
+		if (lcnt++ > 500) {
+			/* timed out - bounce the link */
+			dd_dev_err(dd, "%s: engine %u timeout waiting for packets to egress, remaining count %u, bouncing link\n",
 				  __func__, sde->this_idx, (u32)reg);
+			queue_work(dd->pport->hfi1_wq,
+				&dd->pport->link_bounce_work);
 			break;
 		}
 		udelay(1);
@@ -369,16 +383,17 @@ static void sdma_flush(struct sdma_engine *sde)
 {
 	struct sdma_txreq *txp, *txp_next;
 	LIST_HEAD(flushlist);
+	unsigned long flags;
 
 	/* flush from head to tail */
 	sdma_flush_descq(sde);
-	spin_lock(&sde->flushlist_lock);
+	spin_lock_irqsave(&sde->flushlist_lock, flags);
 	/* copy flush list */
 	list_for_each_entry_safe(txp, txp_next, &sde->flushlist, list) {
 		list_del_init(&txp->list);
 		list_add_tail(&txp->list, &flushlist);
 	}
-	spin_unlock(&sde->flushlist_lock);
+	spin_unlock_irqrestore(&sde->flushlist_lock, flags);
 	/* flush from flush list */
 	list_for_each_entry_safe(txp, txp_next, &flushlist, list) {
 		int drained = 0;
@@ -453,12 +468,6 @@ static void sdma_err_halt_wait(struct work_struct *work)
 
 	sdma_process_event(sde, sdma_event_e15_hw_halt_done);
 }
-
-static void sdma_start_err_halt_wait(struct sdma_engine *sde)
-{
-	schedule_work(&sde->err_halt_worker);
-}
-
 
 static void sdma_err_progress_check_schedule(struct sdma_engine *sde)
 {
@@ -666,11 +675,6 @@ static void sdma_start_hw_clean_up(struct sdma_engine *sde)
 	tasklet_hi_schedule(&sde->sdma_hw_clean_up_task);
 }
 
-static void sdma_start_sw_clean_up(struct sdma_engine *sde)
-{
-	tasklet_hi_schedule(&sde->sdma_sw_clean_up_task);
-}
-
 static void sdma_set_state(struct sdma_engine *sde,
 	enum sdma_states next_state)
 {
@@ -741,6 +745,7 @@ u16 sdma_get_descq_cnt(void)
 		return SDMA_DESCQ_CNT;
 	return count;
 }
+
 /**
  * sdma_select_engine_vl() - select sdma engine
  * @dd: devdata
@@ -760,19 +765,27 @@ struct sdma_engine *sdma_select_engine_vl(
 	struct sdma_map_elem *e;
 	struct sdma_engine *rval;
 
-	if (WARN_ON(vl > 8))
-		return NULL;
+	/* NOTE This should only happen if SC->VL changed after the initial
+	 *      checks on the QP/AH
+	 *      Default will return engine 0 below
+	 */
+	if (vl >= num_vls) {
+		rval = NULL;
+		goto done;
+	}
 
 	rcu_read_lock();
 	m = rcu_dereference(dd->sdma_map);
 	if (unlikely(!m)) {
 		rcu_read_unlock();
-		return NULL;
+		return &dd->per_sdma[0];
 	}
 	e = m->map[vl & m->mask];
 	rval = e->sde[selector & e->mask];
 	rcu_read_unlock();
 
+done:
+	rval =  !rval ? &dd->per_sdma[0] : rval;
 	trace_hfi1_sdma_engine_select(dd, selector, vl, rval->this_idx);
 	return rval;
 }
@@ -966,10 +979,7 @@ static void sdma_clean(struct hfi1_devdata *dd, size_t num_engines)
 			sde->descq = NULL;
 			sde->descq_phys = 0;
 		}
-		if (is_vmalloc_addr(sde->tx_ring))
-			vfree(sde->tx_ring);
-		else
-			kfree(sde->tx_ring);
+		kvfree(sde->tx_ring);
 		sde->tx_ring = NULL;
 	}
 	spin_lock_irq(&dd->sde_map_lock);
@@ -1038,6 +1048,9 @@ int sdma_init(struct hfi1_devdata *dd, u8 port)
 		return -ENOMEM;
 
 	idle_cnt = ns_to_cclock(dd, idle_cnt);
+	if (!sdma_desct_intr)
+		sdma_desct_intr = SDMA_DESC_INTR;
+
 	/* Allocate memory for SendDMA descriptor FIFOs */
 	for (this_idx = 0; this_idx < num_engines; ++this_idx) {
 		sde = &dd->per_sdma[this_idx];
@@ -1096,10 +1109,8 @@ int sdma_init(struct hfi1_devdata *dd, u8 port)
 
 		sde->progress_check_head = 0;
 
-		init_timer(&sde->err_progress_check_timer);
-		sde->err_progress_check_timer.function =
-						sdma_err_progress_check;
-		sde->err_progress_check_timer.data = (unsigned long)sde;
+		setup_timer(&sde->err_progress_check_timer,
+			    sdma_err_progress_check, (unsigned long)sde);
 
 		sde->descq = dma_zalloc_coherent(
 			&dd->pcidev->dev,
@@ -1540,7 +1551,7 @@ void sdma_engine_interrupt(struct sdma_engine *sde, u64 status)
 {
 	trace_hfi1_sdma_engine_interrupt(sde, status);
 	write_seqlock(&sde->head_lock);
-	sdma_set_desc_cnt(sde, sde->descq_cnt / 2);
+	sdma_set_desc_cnt(sde, sdma_desct_intr);
 	sdma_make_progress(sde, status);
 	write_sequnlock(&sde->head_lock);
 }
@@ -1859,7 +1870,7 @@ static void dump_sdma_state(struct sdma_engine *sde)
 }
 
 #define SDE_FMT \
-	"SDE %u STE %s C 0x%llx S 0x%016llx E 0x%llx T(HW) 0x%llx T(SW) 0x%x H(HW) 0x%llx H(SW) 0x%x H(D) 0x%llx DM 0x%llx GL 0x%llx R 0x%llx LIS 0x%llx AHGI 0x%llx TXT %u TXH %u DT %u DH %u FLNE %d DQF %u SLC 0x%llx\n"
+	"SDE %u CPU %d STE %s C 0x%llx S 0x%016llx E 0x%llx T(HW) 0x%llx T(SW) 0x%x H(HW) 0x%llx H(SW) 0x%x H(D) 0x%llx DM 0x%llx GL 0x%llx R 0x%llx LIS 0x%llx AHGI 0x%llx TXT %u TXH %u DT %u DH %u FLNE %d DQF %u SLC 0x%llx\n"
 /**
  * sdma_seqfile_dump_sde() - debugfs dump of sde
  * @s: seq file
@@ -1879,6 +1890,7 @@ void sdma_seqfile_dump_sde(struct seq_file *s, struct sdma_engine *sde)
 	head = sde->descq_head & sde->sdma_mask;
 	tail = ACCESS_ONCE(sde->descq_tail) & sde->sdma_mask;
 	seq_printf(s, SDE_FMT, sde->this_idx,
+		sde->cpu,
 		sdma_state_name(sde->state.current_state),
 		(unsigned long long)read_sde_csr(sde, SD(CTRL)),
 		(unsigned long long)read_sde_csr(sde, SD(STATUS)),
@@ -2293,7 +2305,7 @@ static void __sdma_process_event(struct sdma_engine *sde,
 		case sdma_event_e50_hw_cleaned:
 			break;
 		case sdma_event_e60_hw_halted:
-			sdma_start_err_halt_wait(sde);
+			schedule_work(&sde->err_halt_worker);
 			break;
 		case sdma_event_e70_go_idle:
 			ss->go_s99_running = 0;
@@ -2374,7 +2386,7 @@ static void __sdma_process_event(struct sdma_engine *sde,
 			break;
 		case sdma_event_e60_hw_halted:
 			sdma_set_state(sde, sdma_state_s50_hw_halt_wait);
-			sdma_start_err_halt_wait(sde);
+			schedule_work(&sde->err_halt_worker);
 			break;
 		case sdma_event_e70_go_idle:
 			break;
@@ -2437,7 +2449,7 @@ static void __sdma_process_event(struct sdma_engine *sde,
 		switch (event) {
 		case sdma_event_e00_go_hw_down:
 			sdma_set_state(sde, sdma_state_s00_hw_down);
-			sdma_start_sw_clean_up(sde);
+			tasklet_hi_schedule(&sde->sdma_sw_clean_up_task);
 			break;
 		case sdma_event_e10_go_hw_start:
 			break;
@@ -2479,13 +2491,13 @@ static void __sdma_process_event(struct sdma_engine *sde,
 		switch (event) {
 		case sdma_event_e00_go_hw_down:
 			sdma_set_state(sde, sdma_state_s00_hw_down);
-			sdma_start_sw_clean_up(sde);
+			tasklet_hi_schedule(&sde->sdma_sw_clean_up_task);
 			break;
 		case sdma_event_e10_go_hw_start:
 			break;
 		case sdma_event_e15_hw_halt_done:
 			sdma_set_state(sde, sdma_state_s30_sw_clean_up_wait);
-			sdma_start_sw_clean_up(sde);
+			tasklet_hi_schedule(&sde->sdma_sw_clean_up_task);
 			break;
 		case sdma_event_e25_hw_clean_up_done:
 			break;
@@ -2497,7 +2509,7 @@ static void __sdma_process_event(struct sdma_engine *sde,
 		case sdma_event_e50_hw_cleaned:
 			break;
 		case sdma_event_e60_hw_halted:
-			sdma_start_err_halt_wait(sde);
+			schedule_work(&sde->err_halt_worker);
 			break;
 		case sdma_event_e70_go_idle:
 			ss->go_s99_running = 0;
@@ -2520,13 +2532,13 @@ static void __sdma_process_event(struct sdma_engine *sde,
 		switch (event) {
 		case sdma_event_e00_go_hw_down:
 			sdma_set_state(sde, sdma_state_s00_hw_down);
-			sdma_start_sw_clean_up(sde);
+			tasklet_hi_schedule(&sde->sdma_sw_clean_up_task);
 			break;
 		case sdma_event_e10_go_hw_start:
 			break;
 		case sdma_event_e15_hw_halt_done:
 			sdma_set_state(sde, sdma_state_s30_sw_clean_up_wait);
-			sdma_start_sw_clean_up(sde);
+			tasklet_hi_schedule(&sde->sdma_sw_clean_up_task);
 			break;
 		case sdma_event_e25_hw_clean_up_done:
 			break;
@@ -2538,7 +2550,7 @@ static void __sdma_process_event(struct sdma_engine *sde,
 		case sdma_event_e50_hw_cleaned:
 			break;
 		case sdma_event_e60_hw_halted:
-			sdma_start_err_halt_wait(sde);
+			schedule_work(&sde->err_halt_worker);
 			break;
 		case sdma_event_e70_go_idle:
 			ss->go_s99_running = 0;
@@ -2560,7 +2572,7 @@ static void __sdma_process_event(struct sdma_engine *sde,
 		switch (event) {
 		case sdma_event_e00_go_hw_down:
 			sdma_set_state(sde, sdma_state_s00_hw_down);
-			sdma_start_sw_clean_up(sde);
+			tasklet_hi_schedule(&sde->sdma_sw_clean_up_task);
 			break;
 		case sdma_event_e10_go_hw_start:
 			break;
@@ -2584,7 +2596,7 @@ static void __sdma_process_event(struct sdma_engine *sde,
 			break;
 		case sdma_event_e81_hw_frozen:
 			sdma_set_state(sde, sdma_state_s82_freeze_sw_clean);
-			sdma_start_sw_clean_up(sde);
+			tasklet_hi_schedule(&sde->sdma_sw_clean_up_task);
 			break;
 		case sdma_event_e82_hw_unfreeze:
 			break;
@@ -2599,7 +2611,7 @@ static void __sdma_process_event(struct sdma_engine *sde,
 		switch (event) {
 		case sdma_event_e00_go_hw_down:
 			sdma_set_state(sde, sdma_state_s00_hw_down);
-			sdma_start_sw_clean_up(sde);
+			tasklet_hi_schedule(&sde->sdma_sw_clean_up_task);
 			break;
 		case sdma_event_e10_go_hw_start:
 			break;
@@ -2643,7 +2655,7 @@ static void __sdma_process_event(struct sdma_engine *sde,
 		switch (event) {
 		case sdma_event_e00_go_hw_down:
 			sdma_set_state(sde, sdma_state_s00_hw_down);
-			sdma_start_sw_clean_up(sde);
+			tasklet_hi_schedule(&sde->sdma_sw_clean_up_task);
 			break;
 		case sdma_event_e10_go_hw_start:
 			break;
@@ -2666,7 +2678,7 @@ static void __sdma_process_event(struct sdma_engine *sde,
 			* progress check
 			*/
 			sdma_set_state(sde, sdma_state_s50_hw_halt_wait);
-			sdma_start_err_halt_wait(sde);
+			schedule_work(&sde->err_halt_worker);
 			break;
 		case sdma_event_e70_go_idle:
 			sdma_set_state(sde, sdma_state_s60_idle_halt_wait);
@@ -2699,25 +2711,134 @@ static void __sdma_process_event(struct sdma_engine *sde,
  * of descriptors in the sdma_txreq is exhausted.
  *
  * The code will bump the allocation up to the max
- * of MAX_DESC (64) descriptors.  There doesn't seem
- * much point in an interim step.
+ * of MAX_DESC (64) descriptors. There doesn't seem
+ * much point in an interim step. The last descriptor
+ * is reserved for coalesce buffer in order to support
+ * cases where input packet has >MAX_DESC iovecs.
  *
  */
-int _extend_sdma_tx_descs(struct hfi1_devdata *dd, struct sdma_txreq *tx)
+static int _extend_sdma_tx_descs(struct hfi1_devdata *dd, struct sdma_txreq *tx)
 {
 	int i;
+
+	/* Handle last descriptor */
+	if (unlikely((tx->num_desc == (MAX_DESC - 1)))) {
+		/* if tlen is 0, it is for padding, release last descriptor */
+		if (!tx->tlen) {
+			tx->desc_limit = MAX_DESC;
+		} else if (!tx->coalesce_buf) {
+			/* allocate coalesce buffer with space for padding */
+			tx->coalesce_buf = kmalloc(tx->tlen + sizeof(u32),
+						   GFP_ATOMIC);
+			if (!tx->coalesce_buf)
+				goto enomem;
+			tx->coalesce_idx = 0;
+		}
+		return 0;
+	}
+
+	if (unlikely(tx->num_desc == MAX_DESC))
+		goto enomem;
 
 	tx->descp = kmalloc_array(
 			MAX_DESC,
 			sizeof(struct sdma_desc),
 			GFP_ATOMIC);
 	if (!tx->descp)
-		return -ENOMEM;
-	tx->desc_limit = MAX_DESC;
+		goto enomem;
+
+	/* reserve last descriptor for coalescing */
+	tx->desc_limit = MAX_DESC - 1;
 	/* copy ones already built */
 	for (i = 0; i < tx->num_desc; i++)
 		tx->descp[i] = tx->descs[i];
 	return 0;
+enomem:
+	sdma_txclean(dd, tx);
+	return -ENOMEM;
+}
+
+/*
+ * ext_coal_sdma_tx_descs() - extend or coalesce sdma tx descriptors
+ *
+ * This is called once the initial nominal allocation of descriptors
+ * in the sdma_txreq is exhausted.
+ *
+ * This function calls _extend_sdma_tx_descs to extend or allocate
+ * coalesce buffer. If there is a allocated coalesce buffer, it will
+ * copy the input packet data into the coalesce buffer. It also adds
+ * coalesce buffer descriptor once whe whole packet is received.
+ *
+ * Return:
+ * <0 - error
+ * 0 - coalescing, don't populate descriptor
+ * 1 - continue with populating descriptor
+ */
+int ext_coal_sdma_tx_descs(struct hfi1_devdata *dd, struct sdma_txreq *tx,
+			   int type, void *kvaddr, struct page *page,
+			   unsigned long offset, u16 len)
+{
+	int pad_len, rval;
+	dma_addr_t addr;
+
+	rval = _extend_sdma_tx_descs(dd, tx);
+	if (rval) {
+		sdma_txclean(dd, tx);
+		return rval;
+	}
+
+	/* If coalesce buffer is allocated, copy data into it */
+	if (tx->coalesce_buf) {
+		if (type == SDMA_MAP_NONE) {
+			sdma_txclean(dd, tx);
+			return -EINVAL;
+		}
+
+		if (type == SDMA_MAP_PAGE) {
+			kvaddr = kmap(page);
+			kvaddr += offset;
+		} else if (WARN_ON(!kvaddr)) {
+			sdma_txclean(dd, tx);
+			return -EINVAL;
+		}
+
+		memcpy(tx->coalesce_buf + tx->coalesce_idx, kvaddr, len);
+		tx->coalesce_idx += len;
+		if (type == SDMA_MAP_PAGE)
+			kunmap(page);
+
+		/* If there is more data, return */
+		if (tx->tlen - tx->coalesce_idx)
+			return 0;
+
+		/* Whole packet is received; add any padding */
+		pad_len = tx->packet_len & (sizeof(u32) - 1);
+		if (pad_len) {
+			pad_len = sizeof(u32) - pad_len;
+			memset(tx->coalesce_buf + tx->coalesce_idx, 0, pad_len);
+			/* padding is taken care of for coalescing case */
+			tx->packet_len += pad_len;
+			tx->tlen += pad_len;
+		}
+
+		/* dma map the coalesce buffer */
+		addr = dma_map_single(&dd->pcidev->dev,
+				      tx->coalesce_buf,
+				      tx->tlen,
+				      DMA_TO_DEVICE);
+
+		if (unlikely(dma_mapping_error(&dd->pcidev->dev, addr))) {
+			sdma_txclean(dd, tx);
+			return -ENOSPC;
+		}
+
+		/* Add descriptor for coalesce buffer */
+		tx->desc_limit = MAX_DESC;
+		return _sdma_txadd_daddr(dd, SDMA_MAP_SINGLE, tx,
+					 addr, tx->tlen);
+	}
+
+	return 1;
 }
 
 /* Update sdes when the lmc changes */
@@ -2745,13 +2866,15 @@ int _pad_sdma_tx_descs(struct hfi1_devdata *dd, struct sdma_txreq *tx)
 {
 	int rval = 0;
 
+	tx->num_desc++;
 	if ((unlikely(tx->num_desc == tx->desc_limit))) {
 		rval = _extend_sdma_tx_descs(dd, tx);
-		if (rval)
+		if (rval) {
+			sdma_txclean(dd, tx);
 			return rval;
+		}
 	}
-	/* finish the one just added  */
-	tx->num_desc++;
+	/* finish the one just added */
 	make_tx_sdma_desc(
 		tx,
 		SDMA_MAP_NONE,

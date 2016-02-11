@@ -178,11 +178,50 @@ static int callchain_node__count_rows_rb_tree(struct callchain_node *node)
 	return n;
 }
 
+static int callchain_node__count_flat_rows(struct callchain_node *node)
+{
+	struct callchain_list *chain;
+	char folded_sign = 0;
+	int n = 0;
+
+	list_for_each_entry(chain, &node->parent_val, list) {
+		if (!folded_sign) {
+			/* only check first chain list entry */
+			folded_sign = callchain_list__folded(chain);
+			if (folded_sign == '+')
+				return 1;
+		}
+		n++;
+	}
+
+	list_for_each_entry(chain, &node->val, list) {
+		if (!folded_sign) {
+			/* node->parent_val list might be empty */
+			folded_sign = callchain_list__folded(chain);
+			if (folded_sign == '+')
+				return 1;
+		}
+		n++;
+	}
+
+	return n;
+}
+
+static int callchain_node__count_folded_rows(struct callchain_node *node __maybe_unused)
+{
+	return 1;
+}
+
 static int callchain_node__count_rows(struct callchain_node *node)
 {
 	struct callchain_list *chain;
 	bool unfolded = false;
 	int n = 0;
+
+	if (callchain_param.mode == CHAIN_FLAT)
+		return callchain_node__count_flat_rows(node);
+	else if (callchain_param.mode == CHAIN_FOLDED)
+		return callchain_node__count_folded_rows(node);
 
 	list_for_each_entry(chain, &node->val, list) {
 		++n;
@@ -263,7 +302,7 @@ static void callchain_node__init_have_children(struct callchain_node *node,
 	chain = list_entry(node->val.next, struct callchain_list, list);
 	chain->has_children = has_sibling;
 
-	if (!list_empty(&node->val)) {
+	if (node->val.next != node->val.prev) {
 		chain = list_entry(node->val.prev, struct callchain_list, list);
 		chain->has_children = !RB_EMPTY_ROOT(&node->rb_root);
 	}
@@ -279,6 +318,9 @@ static void callchain__init_have_children(struct rb_root *root)
 	for (nd = rb_first(root); nd; nd = rb_next(nd)) {
 		struct callchain_node *node = rb_entry(nd, struct callchain_node, rb_node);
 		callchain_node__init_have_children(node, has_sibling);
+		if (callchain_param.mode == CHAIN_FLAT ||
+		    callchain_param.mode == CHAIN_FOLDED)
+			callchain_node__make_parent_list(node);
 	}
 }
 
@@ -297,6 +339,9 @@ static bool hist_browser__toggle_fold(struct hist_browser *browser)
 	struct map_symbol *ms = browser->selection;
 	struct callchain_list *cl = container_of(ms, struct callchain_list, ms);
 	bool has_children;
+
+	if (!he || !ms)
+		return false;
 
 	if (ms == &he->ms)
 		has_children = hist_entry__toggle_fold(he);
@@ -435,7 +480,7 @@ static int hist_browser__run(struct hist_browser *browser, const char *help)
 
 	hists__browser_title(browser->hists, hbt, title, sizeof(title));
 
-	if (ui_browser__show(&browser->b, title, help) < 0)
+	if (ui_browser__show(&browser->b, title, "%s", help) < 0)
 		return -1;
 
 	while (1) {
@@ -574,6 +619,231 @@ static bool hist_browser__check_dump_full(struct hist_browser *browser __maybe_u
 
 #define LEVEL_OFFSET_STEP 3
 
+static int hist_browser__show_callchain_list(struct hist_browser *browser,
+					     struct callchain_node *node,
+					     struct callchain_list *chain,
+					     unsigned short row, u64 total,
+					     bool need_percent, int offset,
+					     print_callchain_entry_fn print,
+					     struct callchain_print_arg *arg)
+{
+	char bf[1024], *alloc_str;
+	const char *str;
+
+	if (arg->row_offset != 0) {
+		arg->row_offset--;
+		return 0;
+	}
+
+	alloc_str = NULL;
+	str = callchain_list__sym_name(chain, bf, sizeof(bf),
+				       browser->show_dso);
+
+	if (need_percent) {
+		char buf[64];
+
+		callchain_node__scnprintf_value(node, buf, sizeof(buf),
+						total);
+
+		if (asprintf(&alloc_str, "%s %s", buf, str) < 0)
+			str = "Not enough memory!";
+		else
+			str = alloc_str;
+	}
+
+	print(browser, chain, str, offset, row, arg);
+
+	free(alloc_str);
+	return 1;
+}
+
+static int hist_browser__show_callchain_flat(struct hist_browser *browser,
+					     struct rb_root *root,
+					     unsigned short row, u64 total,
+					     print_callchain_entry_fn print,
+					     struct callchain_print_arg *arg,
+					     check_output_full_fn is_output_full)
+{
+	struct rb_node *node;
+	int first_row = row, offset = LEVEL_OFFSET_STEP;
+	bool need_percent;
+
+	node = rb_first(root);
+	need_percent = node && rb_next(node);
+
+	while (node) {
+		struct callchain_node *child = rb_entry(node, struct callchain_node, rb_node);
+		struct rb_node *next = rb_next(node);
+		struct callchain_list *chain;
+		char folded_sign = ' ';
+		int first = true;
+		int extra_offset = 0;
+
+		list_for_each_entry(chain, &child->parent_val, list) {
+			bool was_first = first;
+
+			if (first)
+				first = false;
+			else if (need_percent)
+				extra_offset = LEVEL_OFFSET_STEP;
+
+			folded_sign = callchain_list__folded(chain);
+
+			row += hist_browser__show_callchain_list(browser, child,
+							chain, row, total,
+							was_first && need_percent,
+							offset + extra_offset,
+							print, arg);
+
+			if (is_output_full(browser, row))
+				goto out;
+
+			if (folded_sign == '+')
+				goto next;
+		}
+
+		list_for_each_entry(chain, &child->val, list) {
+			bool was_first = first;
+
+			if (first)
+				first = false;
+			else if (need_percent)
+				extra_offset = LEVEL_OFFSET_STEP;
+
+			folded_sign = callchain_list__folded(chain);
+
+			row += hist_browser__show_callchain_list(browser, child,
+							chain, row, total,
+							was_first && need_percent,
+							offset + extra_offset,
+							print, arg);
+
+			if (is_output_full(browser, row))
+				goto out;
+
+			if (folded_sign == '+')
+				break;
+		}
+
+next:
+		if (is_output_full(browser, row))
+			break;
+		node = next;
+	}
+out:
+	return row - first_row;
+}
+
+static char *hist_browser__folded_callchain_str(struct hist_browser *browser,
+						struct callchain_list *chain,
+						char *value_str, char *old_str)
+{
+	char bf[1024];
+	const char *str;
+	char *new;
+
+	str = callchain_list__sym_name(chain, bf, sizeof(bf),
+				       browser->show_dso);
+	if (old_str) {
+		if (asprintf(&new, "%s%s%s", old_str,
+			     symbol_conf.field_sep ?: ";", str) < 0)
+			new = NULL;
+	} else {
+		if (value_str) {
+			if (asprintf(&new, "%s %s", value_str, str) < 0)
+				new = NULL;
+		} else {
+			if (asprintf(&new, "%s", str) < 0)
+				new = NULL;
+		}
+	}
+	return new;
+}
+
+static int hist_browser__show_callchain_folded(struct hist_browser *browser,
+					       struct rb_root *root,
+					       unsigned short row, u64 total,
+					       print_callchain_entry_fn print,
+					       struct callchain_print_arg *arg,
+					       check_output_full_fn is_output_full)
+{
+	struct rb_node *node;
+	int first_row = row, offset = LEVEL_OFFSET_STEP;
+	bool need_percent;
+
+	node = rb_first(root);
+	need_percent = node && rb_next(node);
+
+	while (node) {
+		struct callchain_node *child = rb_entry(node, struct callchain_node, rb_node);
+		struct rb_node *next = rb_next(node);
+		struct callchain_list *chain, *first_chain = NULL;
+		int first = true;
+		char *value_str = NULL, *value_str_alloc = NULL;
+		char *chain_str = NULL, *chain_str_alloc = NULL;
+
+		if (arg->row_offset != 0) {
+			arg->row_offset--;
+			goto next;
+		}
+
+		if (need_percent) {
+			char buf[64];
+
+			callchain_node__scnprintf_value(child, buf, sizeof(buf), total);
+			if (asprintf(&value_str, "%s", buf) < 0) {
+				value_str = (char *)"<...>";
+				goto do_print;
+			}
+			value_str_alloc = value_str;
+		}
+
+		list_for_each_entry(chain, &child->parent_val, list) {
+			chain_str = hist_browser__folded_callchain_str(browser,
+						chain, value_str, chain_str);
+			if (first) {
+				first = false;
+				first_chain = chain;
+			}
+
+			if (chain_str == NULL) {
+				chain_str = (char *)"Not enough memory!";
+				goto do_print;
+			}
+
+			chain_str_alloc = chain_str;
+		}
+
+		list_for_each_entry(chain, &child->val, list) {
+			chain_str = hist_browser__folded_callchain_str(browser,
+						chain, value_str, chain_str);
+			if (first) {
+				first = false;
+				first_chain = chain;
+			}
+
+			if (chain_str == NULL) {
+				chain_str = (char *)"Not enough memory!";
+				goto do_print;
+			}
+
+			chain_str_alloc = chain_str;
+		}
+
+do_print:
+		print(browser, first_chain, chain_str, offset, row++, arg);
+		free(value_str_alloc);
+		free(chain_str_alloc);
+
+next:
+		if (is_output_full(browser, row))
+			break;
+		node = next;
+	}
+
+	return row - first_row;
+}
+
 static int hist_browser__show_callchain(struct hist_browser *browser,
 					struct rb_root *root, int level,
 					unsigned short row, u64 total,
@@ -592,15 +862,12 @@ static int hist_browser__show_callchain(struct hist_browser *browser,
 	while (node) {
 		struct callchain_node *child = rb_entry(node, struct callchain_node, rb_node);
 		struct rb_node *next = rb_next(node);
-		u64 cumul = callchain_cumul_hits(child);
 		struct callchain_list *chain;
 		char folded_sign = ' ';
 		int first = true;
 		int extra_offset = 0;
 
 		list_for_each_entry(chain, &child->val, list) {
-			char bf[1024], *alloc_str;
-			const char *str;
 			bool was_first = first;
 
 			if (first)
@@ -609,31 +876,16 @@ static int hist_browser__show_callchain(struct hist_browser *browser,
 				extra_offset = LEVEL_OFFSET_STEP;
 
 			folded_sign = callchain_list__folded(chain);
-			if (arg->row_offset != 0) {
-				arg->row_offset--;
-				goto do_next;
-			}
 
-			alloc_str = NULL;
-			str = callchain_list__sym_name(chain, bf, sizeof(bf),
-						       browser->show_dso);
+			row += hist_browser__show_callchain_list(browser, child,
+							chain, row, total,
+							was_first && need_percent,
+							offset + extra_offset,
+							print, arg);
 
-			if (was_first && need_percent) {
-				double percent = cumul * 100.0 / total;
-
-				if (asprintf(&alloc_str, "%2.2f%% %s", percent, str) < 0)
-					str = "Not enough memory!";
-				else
-					str = alloc_str;
-			}
-
-			print(browser, chain, str, offset + extra_offset, row, arg);
-
-			free(alloc_str);
-
-			if (is_output_full(browser, ++row))
+			if (is_output_full(browser, row))
 				goto out;
-do_next:
+
 			if (folded_sign == '+')
 				break;
 		}
@@ -784,11 +1036,13 @@ static int hist_browser__show_entry(struct hist_browser *browser,
 			.size		= sizeof(s),
 			.ptr		= &arg,
 		};
+		int column = 0;
 
 		hist_browser__gotorc(browser, row, 0);
 
 		perf_hpp__for_each_format(fmt) {
-			if (perf_hpp__should_skip(fmt))
+			if (perf_hpp__should_skip(fmt, entry->hists) ||
+			    column++ < browser->b.horiz_scroll)
 				continue;
 
 			if (current_entry && browser->b.navkeypressed) {
@@ -843,10 +1097,22 @@ static int hist_browser__show_entry(struct hist_browser *browser,
 				total = entry->stat.period;
 		}
 
-		printed += hist_browser__show_callchain(browser,
+		if (callchain_param.mode == CHAIN_FLAT) {
+			printed += hist_browser__show_callchain_flat(browser,
+					&entry->sorted_chain, row, total,
+					hist_browser__show_callchain_entry, &arg,
+					hist_browser__check_output_full);
+		} else if (callchain_param.mode == CHAIN_FOLDED) {
+			printed += hist_browser__show_callchain_folded(browser,
+					&entry->sorted_chain, row, total,
+					hist_browser__show_callchain_entry, &arg,
+					hist_browser__check_output_full);
+		} else {
+			printed += hist_browser__show_callchain(browser,
 					&entry->sorted_chain, 1, row, total,
 					hist_browser__show_callchain_entry, &arg,
 					hist_browser__check_output_full);
+		}
 
 		if (arg.is_current_entry)
 			browser->he_selection = entry;
@@ -861,14 +1127,16 @@ static int advance_hpp_check(struct perf_hpp *hpp, int inc)
 	return hpp->size <= 0;
 }
 
-static int hists__scnprintf_headers(char *buf, size_t size, struct hists *hists)
+static int hists_browser__scnprintf_headers(struct hist_browser *browser, char *buf, size_t size)
 {
+	struct hists *hists = browser->hists;
 	struct perf_hpp dummy_hpp = {
 		.buf    = buf,
 		.size   = size,
 	};
 	struct perf_hpp_fmt *fmt;
 	size_t ret = 0;
+	int column = 0;
 
 	if (symbol_conf.use_callchain) {
 		ret = scnprintf(buf, size, "  ");
@@ -877,7 +1145,7 @@ static int hists__scnprintf_headers(char *buf, size_t size, struct hists *hists)
 	}
 
 	perf_hpp__for_each_format(fmt) {
-		if (perf_hpp__should_skip(fmt))
+		if (perf_hpp__should_skip(fmt, hists)  || column++ < browser->b.horiz_scroll)
 			continue;
 
 		ret = fmt->header(fmt, &dummy_hpp, hists_to_evsel(hists));
@@ -896,7 +1164,7 @@ static void hist_browser__show_headers(struct hist_browser *browser)
 {
 	char headers[1024];
 
-	hists__scnprintf_headers(headers, sizeof(headers), browser->hists);
+	hists_browser__scnprintf_headers(browser, headers, sizeof(headers));
 	ui_browser__gotorc(&browser->b, 0, 0);
 	ui_browser__set_color(&browser->b, HE_COLORSET_ROOT);
 	ui_browser__write_nstring(&browser->b, headers, browser->b.width + 1);
@@ -925,6 +1193,8 @@ static unsigned int hist_browser__refresh(struct ui_browser *browser)
 	}
 
 	ui_browser__hists_init_top(browser);
+	hb->he_selection = NULL;
+	hb->selection = NULL;
 
 	for (nd = browser->top; nd; nd = rb_next(nd)) {
 		struct hist_entry *h = rb_entry(nd, struct hist_entry, rb_node);
@@ -1030,6 +1300,9 @@ static void ui_browser__hists_seek(struct ui_browser *browser,
 	 * and stop when we printed enough lines to fill the screen.
 	 */
 do_offset:
+	if (!nd)
+		return;
+
 	if (offset > 0) {
 		do {
 			h = rb_entry(nd, struct hist_entry, rb_node);
@@ -1142,7 +1415,7 @@ static int hist_browser__fprintf_entry(struct hist_browser *browser,
 		printed += fprintf(fp, "%c ", folded_sign);
 
 	perf_hpp__for_each_format(fmt) {
-		if (perf_hpp__should_skip(fmt))
+		if (perf_hpp__should_skip(fmt, he->hists))
 			continue;
 
 		if (!first) {
@@ -1261,6 +1534,7 @@ static int hists__browser_title(struct hists *hists,
 	int printed;
 	const struct dso *dso = hists->dso_filter;
 	const struct thread *thread = hists->thread_filter;
+	int socket_id = hists->socket_filter;
 	unsigned long nr_samples = hists->stats.nr_events[PERF_RECORD_SAMPLE];
 	u64 nr_events = hists->stats.total_period;
 	struct perf_evsel *evsel = hists_to_evsel(hists);
@@ -1314,6 +1588,9 @@ static int hists__browser_title(struct hists *hists,
 	if (dso)
 		printed += scnprintf(bf + printed, size - printed,
 				    ", DSO: %s", dso->short_name);
+	if (socket_id > -1)
+		printed += scnprintf(bf + printed, size - printed,
+				    ", Processor Socket: %d", socket_id);
 	if (!is_report_browser(hbt)) {
 		struct perf_top *top = hbt->arg;
 
@@ -1423,8 +1700,8 @@ close_file_and_continue:
 
 struct popup_action {
 	struct thread 		*thread;
-	struct dso		*dso;
 	struct map_symbol 	ms;
+	int			socket;
 
 	int (*fn)(struct hist_browser *browser, struct popup_action *act);
 };
@@ -1437,7 +1714,7 @@ do_annotate(struct hist_browser *browser, struct popup_action *act)
 	struct hist_entry *he;
 	int err;
 
-	if (!objdump_path && perf_session_env__lookup_objdump(browser->env))
+	if (!objdump_path && perf_env__lookup_objdump(browser->env))
 		return 0;
 
 	notes = symbol__annotation(act->ms.sym);
@@ -1488,7 +1765,7 @@ do_zoom_thread(struct hist_browser *browser, struct popup_action *act)
 		thread__zput(browser->hists->thread_filter);
 		ui_helpline__pop();
 	} else {
-		ui_helpline__fpush("To zoom out press <- or -> + \"Zoom out of %s(%d) thread\"",
+		ui_helpline__fpush("To zoom out press ESC or ENTER + \"Zoom out of %s(%d) thread\"",
 				   thread->comm_set ? thread__comm_str(thread) : "",
 				   thread->tid);
 		browser->hists->thread_filter = thread__get(thread);
@@ -1522,7 +1799,7 @@ add_thread_opt(struct hist_browser *browser, struct popup_action *act,
 static int
 do_zoom_dso(struct hist_browser *browser, struct popup_action *act)
 {
-	struct dso *dso = act->dso;
+	struct map *map = act->ms.map;
 
 	if (browser->hists->dso_filter) {
 		pstack__remove(browser->pstack, &browser->hists->dso_filter);
@@ -1530,11 +1807,11 @@ do_zoom_dso(struct hist_browser *browser, struct popup_action *act)
 		browser->hists->dso_filter = NULL;
 		ui_helpline__pop();
 	} else {
-		if (dso == NULL)
+		if (map == NULL)
 			return 0;
-		ui_helpline__fpush("To zoom out press <- or -> + \"Zoom out of %s DSO\"",
-				   dso->kernel ? "the Kernel" : dso->short_name);
-		browser->hists->dso_filter = dso;
+		ui_helpline__fpush("To zoom out press ESC or ENTER + \"Zoom out of %s DSO\"",
+				   __map__is_kernel(map) ? "the Kernel" : map->dso->short_name);
+		browser->hists->dso_filter = map->dso;
 		perf_hpp__set_elide(HISTC_DSO, true);
 		pstack__push(browser->pstack, &browser->hists->dso_filter);
 	}
@@ -1546,17 +1823,17 @@ do_zoom_dso(struct hist_browser *browser, struct popup_action *act)
 
 static int
 add_dso_opt(struct hist_browser *browser, struct popup_action *act,
-	    char **optstr, struct dso *dso)
+	    char **optstr, struct map *map)
 {
-	if (dso == NULL)
+	if (map == NULL)
 		return 0;
 
 	if (asprintf(optstr, "Zoom %s %s DSO",
 		     browser->hists->dso_filter ? "out of" : "into",
-		     dso->kernel ? "the Kernel" : dso->short_name) < 0)
+		     __map__is_kernel(map) ? "the Kernel" : map->dso->short_name) < 0)
 		return 0;
 
-	act->dso = dso;
+	act->ms.map = map;
 	act->fn = do_zoom_dso;
 	return 1;
 }
@@ -1672,6 +1949,41 @@ add_exit_opt(struct hist_browser *browser __maybe_unused,
 	return 1;
 }
 
+static int
+do_zoom_socket(struct hist_browser *browser, struct popup_action *act)
+{
+	if (browser->hists->socket_filter > -1) {
+		pstack__remove(browser->pstack, &browser->hists->socket_filter);
+		browser->hists->socket_filter = -1;
+		perf_hpp__set_elide(HISTC_SOCKET, false);
+	} else {
+		browser->hists->socket_filter = act->socket;
+		perf_hpp__set_elide(HISTC_SOCKET, true);
+		pstack__push(browser->pstack, &browser->hists->socket_filter);
+	}
+
+	hists__filter_by_socket(browser->hists);
+	hist_browser__reset(browser);
+	return 0;
+}
+
+static int
+add_socket_opt(struct hist_browser *browser, struct popup_action *act,
+	       char **optstr, int socket_id)
+{
+	if (socket_id < 0)
+		return 0;
+
+	if (asprintf(optstr, "Zoom %s Processor Socket %d",
+		     (browser->hists->socket_filter > -1) ? "out of" : "into",
+		     socket_id) < 0)
+		return 0;
+
+	act->socket = socket_id;
+	act->fn = do_zoom_socket;
+	return 1;
+}
+
 static void hist_browser__update_nr_entries(struct hist_browser *hb)
 {
 	u64 nr_entries = 0;
@@ -1717,14 +2029,16 @@ static int perf_evsel__hists_browse(struct perf_evsel *evsel, int nr_events,
 	"For multiple event sessions:\n\n"				\
 	"TAB/UNTAB     Switch events\n\n"				\
 	"For symbolic views (--sort has sym):\n\n"			\
-	"->            Zoom into DSO/Threads & Annotate current symbol\n" \
-	"<-            Zoom out\n"					\
+	"ENTER         Zoom into DSO/Threads & Annotate current symbol\n" \
+	"ESC           Zoom out\n"					\
 	"a             Annotate current symbol\n"			\
 	"C             Collapse all callchains\n"			\
 	"d             Zoom into current DSO\n"				\
 	"E             Expand all callchains\n"				\
 	"F             Toggle percentage of filtered entries\n"		\
 	"H             Display column headers\n"			\
+	"m             Display context menu\n"				\
+	"S             Zoom into current Processor Socket\n"		\
 
 	/* help messages are sorted by lexical order of the hotkey */
 	const char report_help[] = HIST_BROWSER_HELP_COMMON
@@ -1750,12 +2064,11 @@ static int perf_evsel__hists_browse(struct perf_evsel *evsel, int nr_events,
 	SLang_reset_tty();
 	SLang_init_tty(0, 0, 0);
 
-	if (min_pcnt) {
+	if (min_pcnt)
 		browser->min_pcnt = min_pcnt;
-		hist_browser__update_nr_entries(browser);
-	}
+	hist_browser__update_nr_entries(browser);
 
-	browser->pstack = pstack__new(2);
+	browser->pstack = pstack__new(3);
 	if (browser->pstack == NULL)
 		goto out;
 
@@ -1764,16 +2077,26 @@ static int perf_evsel__hists_browse(struct perf_evsel *evsel, int nr_events,
 	memset(options, 0, sizeof(options));
 	memset(actions, 0, sizeof(actions));
 
-	perf_hpp__for_each_format(fmt)
+	perf_hpp__for_each_format(fmt) {
 		perf_hpp__reset_width(fmt, hists);
+		/*
+		 * This is done just once, and activates the horizontal scrolling
+		 * code in the ui_browser code, it would be better to have a the
+		 * counter in the perf_hpp code, but I couldn't find doing it here
+		 * works, FIXME by setting this in hist_browser__new, for now, be
+		 * clever 8-)
+		 */
+		++browser->b.columns;
+	}
 
 	if (symbol_conf.col_width_list_str)
 		perf_hpp__set_user_width(symbol_conf.col_width_list_str);
 
 	while (1) {
 		struct thread *thread = NULL;
-		struct dso *dso = NULL;
+		struct map *map = NULL;
 		int choice = 0;
+		int socked_id = -1;
 
 		nr_options = 0;
 
@@ -1781,7 +2104,8 @@ static int perf_evsel__hists_browse(struct perf_evsel *evsel, int nr_events,
 
 		if (browser->he_selection != NULL) {
 			thread = hist_browser__selected_thread(browser);
-			dso = browser->selection->map ? browser->selection->map->dso : NULL;
+			map = browser->selection->map;
+			socked_id = browser->he_selection->socket;
 		}
 		switch (key) {
 		case K_TAB:
@@ -1814,7 +2138,7 @@ static int perf_evsel__hists_browse(struct perf_evsel *evsel, int nr_events,
 			hist_browser__dump(browser);
 			continue;
 		case 'd':
-			actions->dso = dso;
+			actions->ms.map = map;
 			do_zoom_dso(browser, actions);
 			continue;
 		case 'V':
@@ -1824,9 +2148,14 @@ static int perf_evsel__hists_browse(struct perf_evsel *evsel, int nr_events,
 			actions->thread = thread;
 			do_zoom_thread(browser, actions);
 			continue;
+		case 'S':
+			actions->socket = socked_id;
+			do_zoom_socket(browser, actions);
+			continue;
 		case '/':
 			if (ui_browser__input_window("Symbol to show",
-					"Please enter the name of symbol you want to see",
+					"Please enter the name of symbol you want to see.\n"
+					"To remove the filter later, press / + ENTER.",
 					buf, "ENTER: OK, ESC: Cancel",
 					delay_secs * 2) == K_ENTER) {
 				hists->symbol_filter_str = *buf ? buf : NULL;
@@ -1871,6 +2200,7 @@ static int perf_evsel__hists_browse(struct perf_evsel *evsel, int nr_events,
 			continue;
 		case K_ENTER:
 		case K_RIGHT:
+		case 'm':
 			/* menu */
 			break;
 		case K_ESC:
@@ -1899,9 +2229,11 @@ static int perf_evsel__hists_browse(struct perf_evsel *evsel, int nr_events,
 				 * Ditto for thread below.
 				 */
 				do_zoom_dso(browser, actions);
-			}
-			if (top == &browser->hists->thread_filter)
+			} else if (top == &browser->hists->thread_filter) {
 				do_zoom_thread(browser, actions);
+			} else if (top == &browser->hists->socket_filter) {
+				do_zoom_socket(browser, actions);
+			}
 			continue;
 		}
 		case 'q':
@@ -1965,12 +2297,14 @@ skip_annotation:
 		nr_options += add_thread_opt(browser, &actions[nr_options],
 					     &options[nr_options], thread);
 		nr_options += add_dso_opt(browser, &actions[nr_options],
-					  &options[nr_options], dso);
+					  &options[nr_options], map);
 		nr_options += add_map_opt(browser, &actions[nr_options],
 					  &options[nr_options],
 					  browser->selection ?
 						browser->selection->map : NULL);
-
+		nr_options += add_socket_opt(browser, &actions[nr_options],
+					     &options[nr_options],
+					     socked_id);
 		/* perf script support */
 		if (browser->he_selection) {
 			nr_options += add_script_opt(browser,

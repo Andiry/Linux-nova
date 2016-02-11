@@ -27,7 +27,7 @@
  * Copyright (c) 2007, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
  *
- * Copyright (c) 2011, 2012, Intel Corporation.
+ * Copyright (c) 2011, 2015, Intel Corporation.
  */
 /*
  * This file is part of Lustre, http://www.lustre.org/
@@ -40,12 +40,12 @@
 
 #define DEBUG_SUBSYSTEM S_SEC
 
-
 #include "../include/obd_support.h"
 #include "../include/obd_cksum.h"
 #include "../include/obd_class.h"
 #include "../include/lustre_net.h"
 #include "../include/lustre_sec.h"
+#include "ptlrpc_internal.h"
 
 struct plain_sec {
 	struct ptlrpc_sec       pls_base;

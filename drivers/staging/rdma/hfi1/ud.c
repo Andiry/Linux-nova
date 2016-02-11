@@ -80,7 +80,7 @@ static void ud_loopback(struct hfi1_qp *sqp, struct hfi1_swqe *swqe)
 
 	rcu_read_lock();
 
-	qp = hfi1_lookup_qpn(ibp, swqe->wr.wr.ud.remote_qpn);
+	qp = hfi1_lookup_qpn(ibp, swqe->ud_wr.remote_qpn);
 	if (!qp) {
 		ibp->n_pkt_drops++;
 		rcu_read_unlock();
@@ -98,7 +98,7 @@ static void ud_loopback(struct hfi1_qp *sqp, struct hfi1_swqe *swqe)
 		goto drop;
 	}
 
-	ah_attr = &to_iah(swqe->wr.wr.ud.ah)->attr;
+	ah_attr = &to_iah(swqe->ud_wr.ah)->attr;
 	ppd = ppd_from_ibp(ibp);
 
 	if (qp->ibqp.qp_num > 1) {
@@ -111,11 +111,10 @@ static void ud_loopback(struct hfi1_qp *sqp, struct hfi1_swqe *swqe)
 				   ((1 << ppd->lmc) - 1));
 		if (unlikely(ingress_pkey_check(ppd, pkey, sc5,
 						qp->s_pkey_index, slid))) {
-			hfi1_bad_pqkey(ibp, IB_NOTICE_TRAP_BAD_PKEY, pkey,
+			hfi1_bad_pqkey(ibp, OPA_TRAP_BAD_P_KEY, pkey,
 				       ah_attr->sl,
 				       sqp->ibqp.qp_num, qp->ibqp.qp_num,
-				       cpu_to_be16(slid),
-				       cpu_to_be16(ah_attr->dlid));
+				       slid, ah_attr->dlid);
 			goto drop;
 		}
 	}
@@ -128,18 +127,18 @@ static void ud_loopback(struct hfi1_qp *sqp, struct hfi1_swqe *swqe)
 	if (qp->ibqp.qp_num) {
 		u32 qkey;
 
-		qkey = (int)swqe->wr.wr.ud.remote_qkey < 0 ?
-			sqp->qkey : swqe->wr.wr.ud.remote_qkey;
+		qkey = (int)swqe->ud_wr.remote_qkey < 0 ?
+			sqp->qkey : swqe->ud_wr.remote_qkey;
 		if (unlikely(qkey != qp->qkey)) {
 			u16 lid;
 
 			lid = ppd->lid | (ah_attr->src_path_bits &
 					  ((1 << ppd->lmc) - 1));
-			hfi1_bad_pqkey(ibp, IB_NOTICE_TRAP_BAD_QKEY, qkey,
+			hfi1_bad_pqkey(ibp, OPA_TRAP_BAD_Q_KEY, qkey,
 				       ah_attr->sl,
 				       sqp->ibqp.qp_num, qp->ibqp.qp_num,
-				       cpu_to_be16(lid),
-				       cpu_to_be16(ah_attr->dlid));
+				       lid,
+				       ah_attr->dlid);
 			goto drop;
 		}
 	}
@@ -234,7 +233,7 @@ static void ud_loopback(struct hfi1_qp *sqp, struct hfi1_swqe *swqe)
 	if (qp->ibqp.qp_type == IB_QPT_GSI || qp->ibqp.qp_type == IB_QPT_SMI) {
 		if (sqp->ibqp.qp_type == IB_QPT_GSI ||
 		    sqp->ibqp.qp_type == IB_QPT_SMI)
-			wc.pkey_index = swqe->wr.wr.ud.pkey_index;
+			wc.pkey_index = swqe->ud_wr.pkey_index;
 		else
 			wc.pkey_index = sqp->s_pkey_index;
 	} else {
@@ -309,7 +308,7 @@ int hfi1_make_ud_req(struct hfi1_qp *qp)
 	/* Construct the header. */
 	ibp = to_iport(qp->ibqp.device, qp->port_num);
 	ppd = ppd_from_ibp(ibp);
-	ah_attr = &to_iah(wqe->wr.wr.ud.ah)->attr;
+	ah_attr = &to_iah(wqe->ud_wr.ah)->attr;
 	if (ah_attr->dlid < HFI1_MULTICAST_LID_BASE ||
 	    ah_attr->dlid == HFI1_PERMISSIVE_LID) {
 		lid = ah_attr->dlid & ~((1 << ppd->lmc) - 1);
@@ -383,6 +382,7 @@ int hfi1_make_ud_req(struct hfi1_qp *qp)
 		lrh0 |= (sc5 & 0xf) << 12;
 		qp->s_sc = sc5;
 	}
+	qp->s_sde = qp_to_sdma_engine(qp, qp->s_sc);
 	qp->s_hdr->ibh.lrh[0] = cpu_to_be16(lrh0);
 	qp->s_hdr->ibh.lrh[1] = cpu_to_be16(ah_attr->dlid);  /* DEST LID */
 	qp->s_hdr->ibh.lrh[2] =
@@ -401,18 +401,18 @@ int hfi1_make_ud_req(struct hfi1_qp *qp)
 		bth0 |= IB_BTH_SOLICITED;
 	bth0 |= extra_bytes << 20;
 	if (qp->ibqp.qp_type == IB_QPT_GSI || qp->ibqp.qp_type == IB_QPT_SMI)
-		bth0 |= hfi1_get_pkey(ibp, wqe->wr.wr.ud.pkey_index);
+		bth0 |= hfi1_get_pkey(ibp, wqe->ud_wr.pkey_index);
 	else
 		bth0 |= hfi1_get_pkey(ibp, qp->s_pkey_index);
 	ohdr->bth[0] = cpu_to_be32(bth0);
-	ohdr->bth[1] = cpu_to_be32(wqe->wr.wr.ud.remote_qpn);
+	ohdr->bth[1] = cpu_to_be32(wqe->ud_wr.remote_qpn);
 	ohdr->bth[2] = cpu_to_be32(mask_psn(qp->s_next_psn++));
 	/*
 	 * Qkeys with the high order bit set mean use the
 	 * qkey from the QP context instead of the WR (see 10.2.5).
 	 */
-	ohdr->u.ud.deth[0] = cpu_to_be32((int)wqe->wr.wr.ud.remote_qkey < 0 ?
-					 qp->qkey : wqe->wr.wr.ud.remote_qkey);
+	ohdr->u.ud.deth[0] = cpu_to_be32((int)wqe->ud_wr.remote_qkey < 0 ?
+					 qp->qkey : wqe->ud_wr.remote_qkey);
 	ohdr->u.ud.deth[1] = cpu_to_be32(qp->ibqp.qp_num);
 	/* disarm any ahg */
 	qp->s_hdr->ahgcount = 0;
@@ -736,12 +736,13 @@ void hfi1_ud_rcv(struct hfi1_packet *packet)
 				 * for invalid pkeys is optional according to
 				 * IB spec (release 1.3, section 10.9.4)
 				 */
-				hfi1_bad_pqkey(ibp, IB_NOTICE_TRAP_BAD_PKEY,
+				hfi1_bad_pqkey(ibp, OPA_TRAP_BAD_P_KEY,
 					       pkey,
 					       (be16_to_cpu(hdr->lrh[0]) >> 4) &
 						0xF,
 					       src_qp, qp->ibqp.qp_num,
-					       hdr->lrh[3], hdr->lrh[1]);
+					       be16_to_cpu(hdr->lrh[3]),
+					       be16_to_cpu(hdr->lrh[1]));
 				return;
 			}
 		} else {
@@ -752,10 +753,11 @@ void hfi1_ud_rcv(struct hfi1_packet *packet)
 
 		}
 		if (unlikely(qkey != qp->qkey)) {
-			hfi1_bad_pqkey(ibp, IB_NOTICE_TRAP_BAD_QKEY, qkey,
+			hfi1_bad_pqkey(ibp, OPA_TRAP_BAD_Q_KEY, qkey,
 				       (be16_to_cpu(hdr->lrh[0]) >> 4) & 0xF,
 				       src_qp, qp->ibqp.qp_num,
-				       hdr->lrh[3], hdr->lrh[1]);
+				       be16_to_cpu(hdr->lrh[3]),
+				       be16_to_cpu(hdr->lrh[1]));
 			return;
 		}
 		/* Drop invalid MAD packets (see 13.5.3.1). */

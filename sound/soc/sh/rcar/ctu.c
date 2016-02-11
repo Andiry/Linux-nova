@@ -13,7 +13,6 @@
 #define CTU_NAME "ctu"
 
 struct rsnd_ctu {
-	struct rsnd_ctu_platform_info *info; /* rcar_snd.h */
 	struct rsnd_mod mod;
 };
 
@@ -24,6 +23,7 @@ struct rsnd_ctu {
 		     ((pos) = (struct rsnd_ctu *)(priv)->ctu + i);	\
 	     i++)
 
+#define rsnd_ctu_get(priv, id) ((struct rsnd_ctu *)(priv->ctu) + id)
 #define rsnd_ctu_initialize_lock(mod)	__rsnd_ctu_initialize_lock(mod, 1)
 #define rsnd_ctu_initialize_unlock(mod)	__rsnd_ctu_initialize_lock(mod, 0)
 static void __rsnd_ctu_initialize_lock(struct rsnd_mod *mod, u32 enable)
@@ -31,11 +31,18 @@ static void __rsnd_ctu_initialize_lock(struct rsnd_mod *mod, u32 enable)
 	rsnd_mod_write(mod, CTU_CTUIR, enable);
 }
 
+static int rsnd_ctu_probe_(struct rsnd_mod *mod,
+			   struct rsnd_dai_stream *io,
+			   struct rsnd_priv *priv)
+{
+	return rsnd_cmd_attach(io, rsnd_mod_id(mod) / 4);
+}
+
 static int rsnd_ctu_init(struct rsnd_mod *mod,
 			 struct rsnd_dai_stream *io,
 			 struct rsnd_priv *priv)
 {
-	rsnd_mod_hw_start(mod);
+	rsnd_mod_power_on(mod);
 
 	rsnd_ctu_initialize_lock(mod);
 
@@ -50,13 +57,14 @@ static int rsnd_ctu_quit(struct rsnd_mod *mod,
 			 struct rsnd_dai_stream *io,
 			 struct rsnd_priv *priv)
 {
-	rsnd_mod_hw_stop(mod);
+	rsnd_mod_power_off(mod);
 
 	return 0;
 }
 
 static struct rsnd_mod_ops rsnd_ctu_ops = {
 	.name		= CTU_NAME,
+	.probe		= rsnd_ctu_probe_,
 	.init		= rsnd_ctu_init,
 	.quit		= rsnd_ctu_quit,
 };
@@ -66,51 +74,13 @@ struct rsnd_mod *rsnd_ctu_mod_get(struct rsnd_priv *priv, int id)
 	if (WARN_ON(id < 0 || id >= rsnd_ctu_nr(priv)))
 		id = 0;
 
-	return &((struct rsnd_ctu *)(priv->ctu) + id)->mod;
+	return rsnd_mod_get(rsnd_ctu_get(priv, id));
 }
 
-static void rsnd_of_parse_ctu(struct platform_device *pdev,
-		       const struct rsnd_of_data *of_data,
-		       struct rsnd_priv *priv)
+int rsnd_ctu_probe(struct rsnd_priv *priv)
 {
 	struct device_node *node;
-	struct rsnd_ctu_platform_info *ctu_info;
-	struct rcar_snd_info *info = rsnd_priv_to_info(priv);
-	struct device *dev = &pdev->dev;
-	int nr;
-
-	if (!of_data)
-		return;
-
-	node = of_get_child_by_name(dev->of_node, "rcar_sound,ctu");
-	if (!node)
-		return;
-
-	nr = of_get_child_count(node);
-	if (!nr)
-		goto rsnd_of_parse_ctu_end;
-
-	ctu_info = devm_kzalloc(dev,
-				sizeof(struct rsnd_ctu_platform_info) * nr,
-				GFP_KERNEL);
-	if (!ctu_info) {
-		dev_err(dev, "ctu info allocation error\n");
-		goto rsnd_of_parse_ctu_end;
-	}
-
-	info->ctu_info		= ctu_info;
-	info->ctu_info_nr	= nr;
-
-rsnd_of_parse_ctu_end:
-	of_node_put(node);
-
-}
-
-int rsnd_ctu_probe(struct platform_device *pdev,
-		   const struct rsnd_of_data *of_data,
-		   struct rsnd_priv *priv)
-{
-	struct rcar_snd_info *info = rsnd_priv_to_info(priv);
+	struct device_node *np;
 	struct device *dev = rsnd_priv_to_dev(priv);
 	struct rsnd_ctu *ctu;
 	struct clk *clk;
@@ -118,25 +88,33 @@ int rsnd_ctu_probe(struct platform_device *pdev,
 	int i, nr, ret;
 
 	/* This driver doesn't support Gen1 at this point */
-	if (rsnd_is_gen1(priv)) {
-		dev_warn(dev, "CTU is not supported on Gen1\n");
-		return -EINVAL;
-	}
-
-	rsnd_of_parse_ctu(pdev, of_data, priv);
-
-	nr = info->ctu_info_nr;
-	if (!nr)
+	if (rsnd_is_gen1(priv))
 		return 0;
 
+	node = rsnd_ctu_of_node(priv);
+	if (!node)
+		return 0; /* not used is not error */
+
+	nr = of_get_child_count(node);
+	if (!nr) {
+		ret = -EINVAL;
+		goto rsnd_ctu_probe_done;
+	}
+
 	ctu = devm_kzalloc(dev, sizeof(*ctu) * nr, GFP_KERNEL);
-	if (!ctu)
-		return -ENOMEM;
+	if (!ctu) {
+		ret = -ENOMEM;
+		goto rsnd_ctu_probe_done;
+	}
 
 	priv->ctu_nr	= nr;
 	priv->ctu	= ctu;
 
-	for_each_rsnd_ctu(ctu, priv, i) {
+	i = 0;
+	ret = 0;
+	for_each_child_of_node(node, np) {
+		ctu = rsnd_ctu_get(priv, i);
+
 		/*
 		 * CTU00, CTU01, CTU02, CTU03 => CTU0
 		 * CTU10, CTU11, CTU12, CTU13 => CTU1
@@ -145,27 +123,32 @@ int rsnd_ctu_probe(struct platform_device *pdev,
 			 CTU_NAME, i / 4);
 
 		clk = devm_clk_get(dev, name);
-		if (IS_ERR(clk))
-			return PTR_ERR(clk);
+		if (IS_ERR(clk)) {
+			ret = PTR_ERR(clk);
+			goto rsnd_ctu_probe_done;
+		}
 
-		ctu->info = &info->ctu_info[i];
-
-		ret = rsnd_mod_init(priv, &ctu->mod, &rsnd_ctu_ops,
+		ret = rsnd_mod_init(priv, rsnd_mod_get(ctu), &rsnd_ctu_ops,
 				    clk, RSND_MOD_CTU, i);
 		if (ret)
-			return ret;
+			goto rsnd_ctu_probe_done;
+
+		i++;
 	}
 
-	return 0;
+
+rsnd_ctu_probe_done:
+	of_node_put(node);
+
+	return ret;
 }
 
-void rsnd_ctu_remove(struct platform_device *pdev,
-		     struct rsnd_priv *priv)
+void rsnd_ctu_remove(struct rsnd_priv *priv)
 {
 	struct rsnd_ctu *ctu;
 	int i;
 
 	for_each_rsnd_ctu(ctu, priv, i) {
-		rsnd_mod_quit(&ctu->mod);
+		rsnd_mod_quit(rsnd_mod_get(ctu));
 	}
 }

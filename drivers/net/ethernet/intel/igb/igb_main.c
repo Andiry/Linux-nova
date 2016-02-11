@@ -151,7 +151,7 @@ static void igb_setup_dca(struct igb_adapter *);
 #endif /* CONFIG_IGB_DCA */
 static int igb_poll(struct napi_struct *, int);
 static bool igb_clean_tx_irq(struct igb_q_vector *);
-static bool igb_clean_rx_irq(struct igb_q_vector *, int);
+static int igb_clean_rx_irq(struct igb_q_vector *, int);
 static int igb_ioctl(struct net_device *, struct ifreq *, int cmd);
 static void igb_tx_timeout(struct net_device *);
 static void igb_reset_task(struct work_struct *);
@@ -946,7 +946,6 @@ static void igb_configure_msix(struct igb_adapter *adapter)
 static int igb_request_msix(struct igb_adapter *adapter)
 {
 	struct net_device *netdev = adapter->netdev;
-	struct e1000_hw *hw = &adapter->hw;
 	int i, err = 0, vector = 0, free_vector = 0;
 
 	err = request_irq(adapter->msix_entries[vector].vector,
@@ -959,7 +958,7 @@ static int igb_request_msix(struct igb_adapter *adapter)
 
 		vector++;
 
-		q_vector->itr_register = hw->hw_addr + E1000_EITR(vector);
+		q_vector->itr_register = adapter->io_addr + E1000_EITR(vector);
 
 		if (q_vector->rx.ring && q_vector->tx.ring)
 			sprintf(q_vector->name, "%s-TxRx-%u", netdev->name,
@@ -1230,7 +1229,7 @@ static int igb_alloc_q_vector(struct igb_adapter *adapter,
 	q_vector->tx.work_limit = adapter->tx_work_limit;
 
 	/* initialize ITR configuration */
-	q_vector->itr_register = adapter->hw.hw_addr + E1000_EITR(0);
+	q_vector->itr_register = adapter->io_addr + E1000_EITR(0);
 	q_vector->itr_val = IGB_START_ITR;
 
 	/* initialize pointer to rings */
@@ -2294,9 +2293,11 @@ static int igb_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	adapter->msg_enable = netif_msg_init(debug, DEFAULT_MSG_ENABLE);
 
 	err = -EIO;
-	hw->hw_addr = pci_iomap(pdev, 0, 0);
-	if (!hw->hw_addr)
+	adapter->io_addr = pci_iomap(pdev, 0, 0);
+	if (!adapter->io_addr)
 		goto err_ioremap;
+	/* hw->hw_addr can be altered, we'll use adapter->io_addr for unmap */
+	hw->hw_addr = adapter->io_addr;
 
 	netdev->netdev_ops = &igb_netdev_ops;
 	igb_set_ethtool_ops(netdev);
@@ -2378,8 +2379,8 @@ static int igb_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	}
 
 	if (hw->mac.type >= e1000_82576) {
-		netdev->hw_features |= NETIF_F_SCTP_CSUM;
-		netdev->features |= NETIF_F_SCTP_CSUM;
+		netdev->hw_features |= NETIF_F_SCTP_CRC;
+		netdev->features |= NETIF_F_SCTP_CRC;
 	}
 
 	netdev->priv_flags |= IFF_UNICAST_FLT;
@@ -2656,7 +2657,7 @@ err_sw_init:
 #ifdef CONFIG_PCI_IOV
 	igb_disable_sriov(pdev);
 #endif
-	pci_iounmap(pdev, hw->hw_addr);
+	pci_iounmap(pdev, adapter->io_addr);
 err_ioremap:
 	free_netdev(netdev);
 err_alloc_etherdev:
@@ -2823,7 +2824,7 @@ static void igb_remove(struct pci_dev *pdev)
 
 	igb_clear_interrupt_scheme(adapter);
 
-	pci_iounmap(pdev, hw->hw_addr);
+	pci_iounmap(pdev, adapter->io_addr);
 	if (hw->flash_address)
 		iounmap(hw->flash_address);
 	pci_release_selected_regions(pdev,
@@ -2855,6 +2856,13 @@ static void igb_probe_vfs(struct igb_adapter *adapter)
 	/* Virtualization features not supported on i210 family. */
 	if ((hw->mac.type == e1000_i210) || (hw->mac.type == e1000_i211))
 		return;
+
+	/* Of the below we really only want the effect of getting
+	 * IGB_FLAG_HAS_MSIX set (if available), without which
+	 * igb_enable_sriov() has no effect.
+	 */
+	igb_set_interrupt_capability(adapter, true);
+	igb_reset_interrupt_capability(adapter);
 
 	pci_sriov_set_totalvfs(pdev, 7);
 	igb_enable_sriov(pdev, max_vfs);
@@ -2985,6 +2993,9 @@ static int igb_sw_init(struct igb_adapter *adapter)
 		break;
 	}
 #endif /* CONFIG_PCI_IOV */
+
+	/* Assume MSI-X interrupts, will be checked during IRQ allocation */
+	adapter->flags |= IGB_FLAG_HAS_MSIX;
 
 	igb_probe_vfs(adapter);
 
@@ -5389,7 +5400,7 @@ static void igb_tsync_interrupt(struct igb_adapter *adapter)
 {
 	struct e1000_hw *hw = &adapter->hw;
 	struct ptp_clock_event event;
-	struct timespec ts;
+	struct timespec64 ts;
 	u32 ack = 0, tsauxc, sec, nsec, tsicr = rd32(E1000_TSICR);
 
 	if (tsicr & TSINTR_SYS_WRAP) {
@@ -5409,10 +5420,11 @@ static void igb_tsync_interrupt(struct igb_adapter *adapter)
 
 	if (tsicr & TSINTR_TT0) {
 		spin_lock(&adapter->tmreg_lock);
-		ts = timespec_add(adapter->perout[0].start,
-				  adapter->perout[0].period);
+		ts = timespec64_add(adapter->perout[0].start,
+				    adapter->perout[0].period);
+		/* u32 conversion of tv_sec is safe until y2106 */
 		wr32(E1000_TRGTTIML0, ts.tv_nsec);
-		wr32(E1000_TRGTTIMH0, ts.tv_sec);
+		wr32(E1000_TRGTTIMH0, (u32)ts.tv_sec);
 		tsauxc = rd32(E1000_TSAUXC);
 		tsauxc |= TSAUXC_EN_TT0;
 		wr32(E1000_TSAUXC, tsauxc);
@@ -5423,10 +5435,10 @@ static void igb_tsync_interrupt(struct igb_adapter *adapter)
 
 	if (tsicr & TSINTR_TT1) {
 		spin_lock(&adapter->tmreg_lock);
-		ts = timespec_add(adapter->perout[1].start,
-				  adapter->perout[1].period);
+		ts = timespec64_add(adapter->perout[1].start,
+				    adapter->perout[1].period);
 		wr32(E1000_TRGTTIML1, ts.tv_nsec);
-		wr32(E1000_TRGTTIMH1, ts.tv_sec);
+		wr32(E1000_TRGTTIMH1, (u32)ts.tv_sec);
 		tsauxc = rd32(E1000_TSAUXC);
 		tsauxc |= TSAUXC_EN_TT1;
 		wr32(E1000_TSAUXC, tsauxc);
@@ -6360,6 +6372,7 @@ static int igb_poll(struct napi_struct *napi, int budget)
 						     struct igb_q_vector,
 						     napi);
 	bool clean_complete = true;
+	int work_done = 0;
 
 #ifdef CONFIG_IGB_DCA
 	if (q_vector->adapter->flags & IGB_FLAG_DCA_ENABLED)
@@ -6368,15 +6381,19 @@ static int igb_poll(struct napi_struct *napi, int budget)
 	if (q_vector->tx.ring)
 		clean_complete = igb_clean_tx_irq(q_vector);
 
-	if (q_vector->rx.ring)
-		clean_complete &= igb_clean_rx_irq(q_vector, budget);
+	if (q_vector->rx.ring) {
+		int cleaned = igb_clean_rx_irq(q_vector, budget);
+
+		work_done += cleaned;
+		clean_complete &= (cleaned < budget);
+	}
 
 	/* If all work not completed, return budget and keep polling */
 	if (!clean_complete)
 		return budget;
 
 	/* If not enough Rx work done, exit the polling mode */
-	napi_complete(napi);
+	napi_complete_done(napi, work_done);
 	igb_ring_irq_enable(q_vector);
 
 	return 0;
@@ -6900,7 +6917,7 @@ static void igb_process_skb_fields(struct igb_ring *rx_ring,
 	skb->protocol = eth_type_trans(skb, rx_ring->netdev);
 }
 
-static bool igb_clean_rx_irq(struct igb_q_vector *q_vector, const int budget)
+static int igb_clean_rx_irq(struct igb_q_vector *q_vector, const int budget)
 {
 	struct igb_ring *rx_ring = q_vector->rx.ring;
 	struct sk_buff *skb = rx_ring->skb;
@@ -6974,7 +6991,7 @@ static bool igb_clean_rx_irq(struct igb_q_vector *q_vector, const int budget)
 	if (cleaned_count)
 		igb_alloc_rx_buffers(rx_ring, cleaned_count);
 
-	return total_packets < budget;
+	return total_packets;
 }
 
 static bool igb_alloc_mapped_page(struct igb_ring *rx_ring,

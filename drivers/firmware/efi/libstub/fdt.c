@@ -147,15 +147,6 @@ efi_status_t update_fdt(efi_system_table_t *sys_table, void *orig_fdt,
 	if (status)
 		goto fdt_set_fail;
 
-	/*
-	 * Add kernel version banner so stub/kernel match can be
-	 * verified.
-	 */
-	status = fdt_setprop_string(fdt, node, "linux,uefi-stub-kern-ver",
-			     linux_banner);
-	if (status)
-		goto fdt_set_fail;
-
 	return EFI_SUCCESS;
 
 fdt_set_fail:
@@ -262,7 +253,7 @@ efi_status_t allocate_new_fdt_and_exit_boot(efi_system_table_t *sys_table,
 			sys_table->boottime->free_pool(memory_map);
 			new_fdt_size += EFI_PAGE_SIZE;
 		} else {
-			pr_efi_err(sys_table, "Unable to constuct new device tree.\n");
+			pr_efi_err(sys_table, "Unable to construct new device tree.\n");
 			goto fail_free_mmap;
 		}
 	}

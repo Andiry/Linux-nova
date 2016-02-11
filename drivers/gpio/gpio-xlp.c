@@ -18,6 +18,7 @@
 #include <linux/module.h>
 #include <linux/irq.h>
 #include <linux/interrupt.h>
+#include <linux/irqchip/chained_irq.h>
 
 /*
  * XLP GPIO has multiple 32 bit registers for each feature where each register
@@ -99,11 +100,6 @@ struct xlp_gpio_priv {
 	spinlock_t lock;
 };
 
-static struct xlp_gpio_priv *gpio_chip_to_xlp_priv(struct gpio_chip *gc)
-{
-	return container_of(gc, struct xlp_gpio_priv, chip);
-}
-
 static int xlp_gpio_get_reg(void __iomem *addr, unsigned gpio)
 {
 	u32 pos, regset;
@@ -132,7 +128,7 @@ static void xlp_gpio_set_reg(void __iomem *addr, unsigned gpio, int state)
 static void xlp_gpio_irq_disable(struct irq_data *d)
 {
 	struct gpio_chip *gc  = irq_data_get_irq_chip_data(d);
-	struct xlp_gpio_priv *priv = gpio_chip_to_xlp_priv(gc);
+	struct xlp_gpio_priv *priv = gpiochip_get_data(gc);
 	unsigned long flags;
 
 	spin_lock_irqsave(&priv->lock, flags);
@@ -144,7 +140,7 @@ static void xlp_gpio_irq_disable(struct irq_data *d)
 static void xlp_gpio_irq_mask_ack(struct irq_data *d)
 {
 	struct gpio_chip *gc  = irq_data_get_irq_chip_data(d);
-	struct xlp_gpio_priv *priv = gpio_chip_to_xlp_priv(gc);
+	struct xlp_gpio_priv *priv = gpiochip_get_data(gc);
 	unsigned long flags;
 
 	spin_lock_irqsave(&priv->lock, flags);
@@ -157,7 +153,7 @@ static void xlp_gpio_irq_mask_ack(struct irq_data *d)
 static void xlp_gpio_irq_unmask(struct irq_data *d)
 {
 	struct gpio_chip *gc  = irq_data_get_irq_chip_data(d);
-	struct xlp_gpio_priv *priv = gpio_chip_to_xlp_priv(gc);
+	struct xlp_gpio_priv *priv = gpiochip_get_data(gc);
 	unsigned long flags;
 
 	spin_lock_irqsave(&priv->lock, flags);
@@ -169,7 +165,7 @@ static void xlp_gpio_irq_unmask(struct irq_data *d)
 static int xlp_gpio_set_irq_type(struct irq_data *d, unsigned int type)
 {
 	struct gpio_chip *gc  = irq_data_get_irq_chip_data(d);
-	struct xlp_gpio_priv *priv = gpio_chip_to_xlp_priv(gc);
+	struct xlp_gpio_priv *priv = gpiochip_get_data(gc);
 	int pol, irq_type;
 
 	switch (type) {
@@ -208,30 +204,33 @@ static struct irq_chip xlp_gpio_irq_chip = {
 	.flags		= IRQCHIP_ONESHOT_SAFE,
 };
 
-static irqreturn_t xlp_gpio_generic_handler(int irq, void *data)
+static void xlp_gpio_generic_handler(struct irq_desc *desc)
 {
-	struct xlp_gpio_priv *priv = data;
+	struct xlp_gpio_priv *priv = irq_desc_get_handler_data(desc);
+	struct irq_chip *irqchip = irq_desc_get_chip(desc);
 	int gpio, regoff;
 	u32 gpio_stat;
 
 	regoff = -1;
 	gpio_stat = 0;
+
+	chained_irq_enter(irqchip, desc);
 	for_each_set_bit(gpio, priv->gpio_enabled_mask, XLP_MAX_NR_GPIO) {
 		if (regoff != gpio / XLP_GPIO_REGSZ) {
 			regoff = gpio / XLP_GPIO_REGSZ;
 			gpio_stat = readl(priv->gpio_intr_stat + regoff * 4);
 		}
+
 		if (gpio_stat & BIT(gpio % XLP_GPIO_REGSZ))
 			generic_handle_irq(irq_find_mapping(
 						priv->chip.irqdomain, gpio));
 	}
-
-	return IRQ_HANDLED;
+	chained_irq_exit(irqchip, desc);
 }
 
 static int xlp_gpio_dir_output(struct gpio_chip *gc, unsigned gpio, int state)
 {
-	struct xlp_gpio_priv *priv = gpio_chip_to_xlp_priv(gc);
+	struct xlp_gpio_priv *priv = gpiochip_get_data(gc);
 
 	BUG_ON(gpio >= gc->ngpio);
 	xlp_gpio_set_reg(priv->gpio_out_en, gpio, 0x1);
@@ -241,7 +240,7 @@ static int xlp_gpio_dir_output(struct gpio_chip *gc, unsigned gpio, int state)
 
 static int xlp_gpio_dir_input(struct gpio_chip *gc, unsigned gpio)
 {
-	struct xlp_gpio_priv *priv = gpio_chip_to_xlp_priv(gc);
+	struct xlp_gpio_priv *priv = gpiochip_get_data(gc);
 
 	BUG_ON(gpio >= gc->ngpio);
 	xlp_gpio_set_reg(priv->gpio_out_en, gpio, 0x0);
@@ -251,7 +250,7 @@ static int xlp_gpio_dir_input(struct gpio_chip *gc, unsigned gpio)
 
 static int xlp_gpio_get(struct gpio_chip *gc, unsigned gpio)
 {
-	struct xlp_gpio_priv *priv = gpio_chip_to_xlp_priv(gc);
+	struct xlp_gpio_priv *priv = gpiochip_get_data(gc);
 
 	BUG_ON(gpio >= gc->ngpio);
 	return xlp_gpio_get_reg(priv->gpio_paddrv, gpio);
@@ -259,7 +258,7 @@ static int xlp_gpio_get(struct gpio_chip *gc, unsigned gpio)
 
 static void xlp_gpio_set(struct gpio_chip *gc, unsigned gpio, int state)
 {
-	struct xlp_gpio_priv *priv = gpio_chip_to_xlp_priv(gc);
+	struct xlp_gpio_priv *priv = gpiochip_get_data(gc);
 
 	BUG_ON(gpio >= gc->ngpio);
 	xlp_gpio_set_reg(priv->gpio_paddrv, gpio, state);
@@ -369,7 +368,7 @@ static int xlp_gpio_probe(struct platform_device *pdev)
 	gc->owner = THIS_MODULE;
 	gc->label = dev_name(&pdev->dev);
 	gc->base = 0;
-	gc->dev = &pdev->dev;
+	gc->parent = &pdev->dev;
 	gc->ngpio = ngpio;
 	gc->of_node = pdev->dev.of_node;
 	gc->direction_output = xlp_gpio_dir_output;
@@ -378,19 +377,13 @@ static int xlp_gpio_probe(struct platform_device *pdev)
 	gc->get = xlp_gpio_get;
 
 	spin_lock_init(&priv->lock);
-
-	err = devm_request_irq(&pdev->dev, irq, xlp_gpio_generic_handler,
-			IRQ_TYPE_NONE, pdev->name, priv);
-	if (err)
-		return err;
-
 	irq_base = irq_alloc_descs(-1, XLP_GPIO_IRQ_BASE, gc->ngpio, 0);
 	if (irq_base < 0) {
 		dev_err(&pdev->dev, "Failed to allocate IRQ numbers\n");
 		return -ENODEV;
 	}
 
-	err = gpiochip_add(gc);
+	err = gpiochip_add_data(gc, priv);
 	if (err < 0)
 		goto out_free_desc;
 
@@ -400,6 +393,9 @@ static int xlp_gpio_probe(struct platform_device *pdev)
 		dev_err(&pdev->dev, "Could not connect irqchip to gpiochip!\n");
 		goto out_gpio_remove;
 	}
+
+	gpiochip_set_chained_irqchip(gc, &xlp_gpio_irq_chip, irq,
+			xlp_gpio_generic_handler);
 
 	dev_info(&pdev->dev, "registered %d GPIOs\n", gc->ngpio);
 

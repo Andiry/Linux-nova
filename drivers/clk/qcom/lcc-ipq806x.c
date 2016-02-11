@@ -419,6 +419,7 @@ static const struct regmap_config lcc_ipq806x_regmap_config = {
 	.val_bits	= 32,
 	.max_register	= 0xfc,
 	.fast_io	= true,
+	.val_format_endian = REGMAP_ENDIAN_LITTLE,
 };
 
 static const struct qcom_cc_desc lcc_ipq806x_desc = {
@@ -452,15 +453,8 @@ static int lcc_ipq806x_probe(struct platform_device *pdev)
 	return qcom_cc_really_probe(pdev, &lcc_ipq806x_desc, regmap);
 }
 
-static int lcc_ipq806x_remove(struct platform_device *pdev)
-{
-	qcom_cc_remove(pdev);
-	return 0;
-}
-
 static struct platform_driver lcc_ipq806x_driver = {
 	.probe		= lcc_ipq806x_probe,
-	.remove		= lcc_ipq806x_remove,
 	.driver		= {
 		.name	= "lcc-ipq806x",
 		.of_match_table = lcc_ipq806x_match_table,

@@ -29,7 +29,7 @@
 #include <linux/slab.h>
 #include <linux/spinlock.h>
 #include <linux/videodev2.h>
-#include <media/exynos-fimc.h>
+#include <media/drv-intf/exynos-fimc.h>
 #include <media/v4l2-of.h>
 #include <media/v4l2-subdev.h>
 
@@ -706,7 +706,8 @@ static irqreturn_t s5pcsis_irq_handler(int irq, void *dev_id)
 		else
 			offset = S5PCSIS_PKTDATA_ODD;
 
-		memcpy(pktbuf->data, state->regs + offset, pktbuf->len);
+		memcpy(pktbuf->data, (u8 __force *)state->regs + offset,
+		       pktbuf->len);
 		pktbuf->data = NULL;
 		rmb();
 	}
@@ -865,8 +866,8 @@ static int s5pcsis_probe(struct platform_device *pdev)
 
 	state->pads[CSIS_PAD_SINK].flags = MEDIA_PAD_FL_SINK;
 	state->pads[CSIS_PAD_SOURCE].flags = MEDIA_PAD_FL_SOURCE;
-	ret = media_entity_init(&state->sd.entity,
-				CSIS_PADS_NUM, state->pads, 0);
+	ret = media_entity_pads_init(&state->sd.entity,
+				CSIS_PADS_NUM, state->pads);
 	if (ret < 0)
 		goto e_clkdis;
 

@@ -26,7 +26,7 @@
  * Or, point your browser to http://www.gnu.org/copyleft/gpl.html
  *
  *
- * the project's page is at http://www.linuxtv.org/ 
+ * the project's page is at https://linuxtv.org
  */
 
 
@@ -303,7 +303,6 @@ static int arm_thread(void *data)
 static int DvbDmxFilterCallback(u8 *buffer1, size_t buffer1_len,
 				u8 *buffer2, size_t buffer2_len,
 				struct dvb_demux_filter *dvbdmxfilter,
-				enum dmx_success success,
 				struct av7110 *av7110)
 {
 	if (!dvbdmxfilter->feed->demux->dmx.frontend)
@@ -329,16 +328,14 @@ static int DvbDmxFilterCallback(u8 *buffer1, size_t buffer1_len,
 		}
 		return dvbdmxfilter->feed->cb.sec(buffer1, buffer1_len,
 						  buffer2, buffer2_len,
-						  &dvbdmxfilter->filter,
-						  DMX_OK);
+						  &dvbdmxfilter->filter);
 	case DMX_TYPE_TS:
 		if (!(dvbdmxfilter->feed->ts_type & TS_PACKET))
 			return 0;
 		if (dvbdmxfilter->feed->ts_type & TS_PAYLOAD_ONLY)
 			return dvbdmxfilter->feed->cb.ts(buffer1, buffer1_len,
 							 buffer2, buffer2_len,
-							 &dvbdmxfilter->feed->feed.ts,
-							 DMX_OK);
+							 &dvbdmxfilter->feed->feed.ts);
 		else
 			av7110_p2t_write(buffer1, buffer1_len,
 					 dvbdmxfilter->feed->pid,
@@ -422,7 +419,7 @@ static void debiirq(unsigned long cookie)
 			DvbDmxFilterCallback((u8 *)av7110->debi_virt,
 					     av7110->debilen, NULL, 0,
 					     av7110->handle2filter[handle],
-					     DMX_OK, av7110);
+					     av7110);
 		xfer = RX_BUFF;
 		break;
 
@@ -1361,7 +1358,7 @@ static int av7110_register(struct av7110 *av7110)
 
 #ifdef CONFIG_DVB_AV7110_OSD
 	dvb_register_device(&av7110->dvb_adapter, &av7110->osd_dev,
-			    &dvbdev_osd, av7110, DVB_DEVICE_OSD);
+			    &dvbdev_osd, av7110, DVB_DEVICE_OSD, 0);
 #endif
 
 	dvb_net_init(&av7110->dvb_adapter, &av7110->dvb_net, &dvbdemux->dmx);
@@ -1540,7 +1537,7 @@ static int get_firmware(struct av7110* av7110)
 			printk(KERN_ERR "dvb-ttpci: usually this should be in "
 			       "/usr/lib/hotplug/firmware or /lib/firmware\n");
 			printk(KERN_ERR "dvb-ttpci: and can be downloaded from"
-			       " http://www.linuxtv.org/download/dvb/firmware/\n");
+			       " https://linuxtv.org/download/dvb/firmware/\n");
 		} else
 			printk(KERN_ERR "dvb-ttpci: cannot request firmware"
 			       " (error %i)\n", ret);
@@ -2317,7 +2314,7 @@ static int frontend_init(struct av7110 *av7110)
 /* Budgetpatch note:
  * Original hardware design by Roberto Deza:
  * There is a DVB_Wiki at
- * http://www.linuxtv.org/
+ * https://linuxtv.org
  *
  * New software triggering design by Emard that works on
  * original Roberto Deza's hardware:

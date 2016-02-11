@@ -30,6 +30,7 @@
 #include <linux/uaccess.h>
 #include <linux/hugetlb.h>
 #include <asm/asm-offsets.h>
+#include <asm/diag.h>
 #include <asm/pgtable.h>
 #include <asm/irq.h>
 #include <asm/mmu_context.h>
@@ -227,7 +228,7 @@ static inline void report_user_fault(struct pt_regs *regs, long signr)
 		return;
 	printk(KERN_ALERT "User process fault: interruption code %04x ilc:%d ",
 	       regs->int_code & 0xffff, regs->int_code >> 17);
-	print_vma_addr(KERN_CONT "in ", regs->psw.addr & PSW_ADDR_INSN);
+	print_vma_addr(KERN_CONT "in ", regs->psw.addr);
 	printk(KERN_CONT "\n");
 	printk(KERN_ALERT "failing address: %016lx TEID: %016lx\n",
 	       regs->int_parm_long & __FAIL_ADDR_MASK, regs->int_parm_long);
@@ -253,12 +254,11 @@ static noinline void do_sigsegv(struct pt_regs *regs, int si_code)
 static noinline void do_no_context(struct pt_regs *regs)
 {
 	const struct exception_table_entry *fixup;
-	unsigned long address;
 
 	/* Are we prepared to handle this kernel fault?  */
-	fixup = search_exception_tables(regs->psw.addr & PSW_ADDR_INSN);
+	fixup = search_exception_tables(regs->psw.addr);
 	if (fixup) {
-		regs->psw.addr = extable_fixup(fixup) | PSW_ADDR_AMODE;
+		regs->psw.addr = extable_fixup(fixup);
 		return;
 	}
 
@@ -266,7 +266,6 @@ static noinline void do_no_context(struct pt_regs *regs)
 	 * Oops. The kernel tried to access some bad page. We'll have to
 	 * terminate things with extreme prejudice.
 	 */
-	address = regs->int_parm_long & __FAIL_ADDR_MASK;
 	if (!user_space_fault(regs))
 		printk(KERN_ALERT "Unable to handle kernel pointer dereference"
 		       " in virtual kernel address space\n");
@@ -589,7 +588,7 @@ int pfault_init(void)
 		.reffcode = 0,
 		.refdwlen = 5,
 		.refversn = 2,
-		.refgaddr = __LC_CURRENT_PID,
+		.refgaddr = __LC_LPP,
 		.refselmk = 1ULL << 48,
 		.refcmpmk = 1ULL << 48,
 		.reserved = __PF_RES_FIELD };
@@ -597,6 +596,7 @@ int pfault_init(void)
 
 	if (pfault_disable)
 		return -1;
+	diag_stat_inc(DIAG_STAT_X258);
 	asm volatile(
 		"	diag	%1,%0,0x258\n"
 		"0:	j	2f\n"
@@ -618,6 +618,7 @@ void pfault_fini(void)
 
 	if (pfault_disable)
 		return;
+	diag_stat_inc(DIAG_STAT_X258);
 	asm volatile(
 		"	diag	%0,0,0x258\n"
 		"0:\n"
@@ -646,7 +647,7 @@ static void pfault_interrupt(struct ext_code ext_code,
 		return;
 	inc_irq_stat(IRQEXT_PFL);
 	/* Get the token (= pid of the affected task). */
-	pid = param64;
+	pid = param64 & LPP_PFAULT_PID_MASK;
 	rcu_read_lock();
 	tsk = find_task_by_pid_ns(pid, &init_pid_ns);
 	if (tsk)

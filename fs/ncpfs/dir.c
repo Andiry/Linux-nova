@@ -369,7 +369,7 @@ ncp_lookup_validate(struct dentry *dentry, unsigned int flags)
 	if (!res) {
 		struct inode *inode = d_inode(dentry);
 
-		mutex_lock(&inode->i_mutex);
+		inode_lock(inode);
 		if (finfo.i.dirEntNum == NCP_FINFO(inode)->dirEntNum) {
 			ncp_new_dentry(dentry);
 			val=1;
@@ -377,7 +377,7 @@ ncp_lookup_validate(struct dentry *dentry, unsigned int flags)
 			ncp_dbg(2, "found, but dirEntNum changed\n");
 
 		ncp_update_inode2(inode, &finfo);
-		mutex_unlock(&inode->i_mutex);
+		inode_unlock(inode);
 	}
 
 finished:
@@ -597,7 +597,7 @@ ncp_fill_cache(struct file *file, struct dir_context *ctx,
 	qname.name = __name;
 
 	newdent = d_hash_and_lookup(dentry, &qname);
-	if (unlikely(IS_ERR(newdent)))
+	if (IS_ERR(newdent))
 		goto end_advance;
 	if (!newdent) {
 		newdent = d_alloc(dentry, &qname);
@@ -639,9 +639,9 @@ ncp_fill_cache(struct file *file, struct dir_context *ctx,
 	} else {
 		struct inode *inode = d_inode(newdent);
 
-		mutex_lock_nested(&inode->i_mutex, I_MUTEX_CHILD);
+		inode_lock_nested(inode, I_MUTEX_CHILD);
 		ncp_update_inode2(inode, entry);
-		mutex_unlock(&inode->i_mutex);
+		inode_unlock(inode);
 	}
 
 	if (ctl.idx >= NCP_DIRCACHE_SIZE) {
@@ -1165,8 +1165,6 @@ out:
 static int ncp_mknod(struct inode * dir, struct dentry *dentry,
 		     umode_t mode, dev_t rdev)
 {
-	if (!new_valid_dev(rdev))
-		return -EINVAL;
 	if (ncp_is_nfs_extras(NCP_SERVER(dir), NCP_FINFO(dir)->volNumber)) {
 		ncp_dbg(1, "mode = 0%ho\n", mode);
 		return ncp_create_new(dir, dentry, mode, rdev, 0);

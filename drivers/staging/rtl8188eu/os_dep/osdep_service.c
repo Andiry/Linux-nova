@@ -52,7 +52,7 @@ void *rtw_malloc2d(int h, int w, int size)
 	int j;
 
 	void **a = kzalloc(h*sizeof(void *) + h*w*size, GFP_KERNEL);
-	if (a == NULL) {
+	if (!a) {
 		pr_info("%s: alloc memory fail!\n", __func__);
 		return NULL;
 	}
@@ -75,12 +75,6 @@ void	_rtw_init_queue(struct __queue *pqueue)
 {
 	INIT_LIST_HEAD(&(pqueue->queue));
 	spin_lock_init(&(pqueue->lock));
-}
-
-/*  the input parameter start must be in jiffies */
-inline s32 rtw_get_passing_time_ms(u32 start)
-{
-	return jiffies_to_msecs(jiffies-start);
 }
 
 struct net_device *rtw_alloc_etherdev_with_old_priv(int sizeof_priv,
