@@ -37,6 +37,7 @@
 #include <linux/cred.h>
 #include <linux/backing-dev.h>
 #include <linux/list.h>
+#include <linux/pfn_t.h>
 #include "nova.h"
 
 int measure_timing = 0;
@@ -89,7 +90,7 @@ static int nova_get_block_info(struct super_block *sb,
 	struct nova_sb_info *sbi)
 {
 	void *virt_addr = NULL;
-	unsigned long pfn;
+	pfn_t pfn;
 	long size;
 
 	if (!sb->s_bdev->bd_disk->fops->direct_access) {
@@ -103,7 +104,7 @@ static int nova_get_block_info(struct super_block *sb,
 					0, &virt_addr, &pfn);
 
 	sbi->virt_addr = virt_addr;
-	sbi->phys_addr = pfn << PAGE_SHIFT;
+	sbi->phys_addr = pfn_t_to_pfn(pfn) << PAGE_SHIFT;
 	sbi->initsize = size;
 
 	nova_dbg("%s: phys_addr 0x%llx, virt_addr %p, size %ld\n",

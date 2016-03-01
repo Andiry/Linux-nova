@@ -14,6 +14,7 @@
  */
 
 #include <linux/buffer_head.h>
+#include <linux/pfn_t.h>
 #include <asm/cpufeature.h>
 #include <asm/pgtable.h>
 #include "nova.h"
@@ -650,7 +651,7 @@ ssize_t nova_dax_file_write(struct file *filp, const char __user *buf,
 
 static int nova_get_nvmm_pfn(struct super_block *sb, struct nova_inode *pi,
 	struct nova_inode_info *si, u64 nvmm, pgoff_t pgoff,
-	vm_flags_t vm_flags, void **kmem, unsigned long *pfn)
+	vm_flags_t vm_flags, void **kmem, pfn_t *pfn)
 {
 	struct nova_inode_info_header *sih = &si->header;
 	u64 mmap_block;
@@ -702,13 +703,13 @@ static int nova_get_nvmm_pfn(struct super_block *sb, struct nova_inode *pi,
 	}
 
 	*kmem = mmap_addr;
-	*pfn = nova_get_pfn(sb, mmap_block);
+	*pfn = phys_to_pfn_t(nova_get_pfn(sb, mmap_block), PFN_DEV | PFN_MAP);
 
 	return 0;
 }
 
 static int nova_get_mmap_addr(struct inode *inode, struct vm_area_struct *vma,
-	pgoff_t pgoff, int create, void **kmem, unsigned long *pfn)
+	pgoff_t pgoff, int create, void **kmem, pfn_t *pfn)
 {
 	struct super_block *sb = inode->i_sb;
 	struct nova_inode_info *si = NOVA_I(inode);
@@ -745,7 +746,7 @@ static int __nova_dax_file_fault(struct vm_area_struct *vma,
 	struct inode *inode = mapping->host;
 	pgoff_t size;
 	void *dax_mem;
-	unsigned long dax_pfn = 0;
+	pfn_t dax_pfn = {.val = 0,};
 	int err;
 
 	size = (i_size_read(inode) + PAGE_CACHE_SIZE - 1) >> PAGE_CACHE_SHIFT;
@@ -775,9 +776,9 @@ static int __nova_dax_file_fault(struct vm_area_struct *vma,
 			"VA(0x%lx)->PA(0x%lx)\n",
 			inode->i_ino, vma->vm_start, vma->vm_end, vmf->pgoff,
 			vma->vm_pgoff, (unsigned long)vmf->virtual_address,
-			(unsigned long)dax_pfn << PAGE_SHIFT);
+			(unsigned long)pfn_t_to_pfn(dax_pfn) << PAGE_SHIFT);
 
-	if (dax_pfn == 0)
+	if (pfn_t_to_pfn(dax_pfn) == 0)
 		return VM_FAULT_SIGBUS;
 
 	err = vm_insert_mixed(vma, (unsigned long)vmf->virtual_address, dax_pfn);
