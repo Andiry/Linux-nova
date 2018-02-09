@@ -65,6 +65,8 @@ config FS_DAX_PMD
 config FS_DAX_LIMITED
 	bool
 
+source "fs/nova/Kconfig"
+
 endif # BLOCK
 
 # Posix ACL utility routines

@@ -9819,6 +9819,14 @@ F:	drivers/power/supply/bq27xxx_battery_i2c.c
 F:	drivers/power/supply/isp1704_charger.c
 F:	drivers/power/supply/rx51_battery.c
 
+NOVA FILESYSTEM
+M:	Andiry Xu <jix024@cs.ucsd.edu>
+M:	Steven Swanson <swanson@cs.ucsd.edu>
+L:	linux-fsdevel@vger.kernel.org
+L:	linux-nvdimm@lists.01.org
+F:	Documentation/filesystems/nova.txt
+F:	fs/nova/
+
 NTB AMD DRIVER
 M:	Shyam Sundar S K <Shyam-sundar.S-k@amd.com>
 L:	linux-ntb@googlegroups.com
