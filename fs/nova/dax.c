@@ -1307,25 +1307,6 @@ static int nova_remove_write_vma(struct vm_area_struct *vma)
 	return 0;
 }
 
-static int nova_restore_page_write(struct vm_area_struct *vma,
-	unsigned long address)
-{
-	struct mm_struct *mm = vma->vm_mm;
-
-
-	down_write(&mm->mmap_sem);
-
-	nova_dbgv("Restore vma %p write, start 0x%lx, end 0x%lx, address 0x%lx\n",
-		  vma, vma->vm_start, vma->vm_end, address);
-
-	/* Restore single page write */
-	nova_mmap_to_new_blocks(vma, address);
-
-	up_write(&mm->mmap_sem);
-
-	return 0;
-}
-
 static void nova_vma_open(struct vm_area_struct *vma)
 {
 	struct address_space *mapping = vma->vm_file->f_mapping;
@@ -1348,7 +1329,6 @@ static void nova_vma_close(struct vm_area_struct *vma)
 		  __func__, __LINE__, vma->vm_start, vma->vm_end,
 		  vma->vm_flags, pgprot_val(vma->vm_page_prot));
 
-//	vma->original_write = 0;
 	nova_remove_write_vma(vma);
 }
 
@@ -1359,6 +1339,5 @@ const struct vm_operations_struct nova_dax_vm_ops = {
 	.pfn_mkwrite = nova_dax_pfn_mkwrite,
 	.open = nova_vma_open,
 	.close = nova_vma_close,
-//	.dax_cow = nova_restore_page_write,
 };
 

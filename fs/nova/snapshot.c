@@ -956,8 +956,6 @@ int nova_create_snapshot(struct super_block *sb)
 
 	ret = nova_insert_snapshot_info(sb, info);
 
-	nova_set_vmas_readonly(sb);
-
 	sbi->nova_sb->s_wtime = cpu_to_le32(get_seconds());
 	sbi->nova_sb->s_epoch_id = cpu_to_le64(epoch_id);
 	nova_update_super_crc(sb);
