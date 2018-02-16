@@ -501,9 +501,9 @@ static int nova_set_vma_read(struct vm_area_struct *vma)
 				vma->vm_end);
 
 	new_page_prot = vm_get_page_prot(newflags);
-	change_protection(vma, vma->vm_start, vma->vm_end,
-				new_page_prot, 0, 0);
-	vma->original_write = 1;
+//	change_protection(vma, vma->vm_start, vma->vm_end,
+//				new_page_prot, 0, 0);
+//	vma->original_write = 1;
 
 out:
 	up_write(&mm->mmap_sem);

@@ -998,7 +998,7 @@ static struct inode *nova_alloc_inode(struct super_block *sb)
 	if (!vi)
 		return NULL;
 
-	vi->vfs_inode.i_version = 1;
+//	vi->vfs_inode.i_version = 1;
 
 	return &vi->vfs_inode;
 }
