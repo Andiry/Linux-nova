@@ -32,7 +32,6 @@
 /*
  * Mount flags
  */
-#define NOVA_MOUNT_PROTECT      0x000001    /* wprotect CR0.WP */
 #define NOVA_MOUNT_XATTR_USER   0x000002    /* Extended user attributes */
 #define NOVA_MOUNT_POSIX_ACL    0x000004    /* POSIX Access Control Lists */
 #define NOVA_MOUNT_DAX          0x000008    /* Direct Access */

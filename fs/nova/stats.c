@@ -123,7 +123,6 @@ const char *Timingstring[TIMING_NUM] = {
 	"free_inode",
 	"free_inode_log",
 	"evict_inode",
-	"wprotect",
 
 	/* Mmap */
 	"=============== MMap operations ================",

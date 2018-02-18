@@ -90,7 +90,6 @@ static void nova_lite_transaction_for_new_inode(struct super_block *sb,
 
 	cpu = smp_processor_id();
 	spin_lock(&sbi->journal_locks[cpu]);
-	nova_memunlock_journal(sb);
 
 	// If you change what's required to create a new inode, you need to
 	// update this functions so the changes will be roll back on failure.
@@ -103,14 +102,11 @@ static void nova_lite_transaction_for_new_inode(struct super_block *sb,
 	PERSISTENT_BARRIER();
 
 	nova_commit_lite_transaction(sb, journal_tail, cpu);
-	nova_memlock_journal(sb);
 	spin_unlock(&sbi->journal_locks[cpu]);
 
 	if (metadata_csum) {
-		nova_memunlock_inode(sb, pi);
 		nova_update_alter_inode(sb, inode, pi);
 		nova_update_alter_inode(sb, dir, pidir);
-		nova_memlock_inode(sb, pi);
 	}
 	NOVA_END_TIMING(create_trans_t, trans_time);
 }
@@ -310,7 +306,6 @@ static void nova_lite_transaction_for_time_and_link(struct super_block *sb,
 
 	cpu = smp_processor_id();
 	spin_lock(&sbi->journal_locks[cpu]);
-	nova_memunlock_journal(sb);
 
 	// If you change what's required to create a new inode, you need to
 	// update this functions so the changes will be roll back on failure.
@@ -328,14 +323,11 @@ static void nova_lite_transaction_for_time_and_link(struct super_block *sb,
 	PERSISTENT_BARRIER();
 
 	nova_commit_lite_transaction(sb, journal_tail, cpu);
-	nova_memlock_journal(sb);
 	spin_unlock(&sbi->journal_locks[cpu]);
 
 	if (metadata_csum) {
-		nova_memunlock_inode(sb, pi);
 		nova_update_alter_inode(sb, inode, pi);
 		nova_update_alter_inode(sb, dir, pidir);
-		nova_memlock_inode(sb, pi);
 	}
 
 	NOVA_END_TIMING(link_trans_t, trans_time);
@@ -818,7 +810,6 @@ static int nova_rename(struct inode *old_dir,
 
 	cpu = smp_processor_id();
 	spin_lock(&sbi->journal_locks[cpu]);
-	nova_memunlock_journal(sb);
 	if (new_inode && new_inode->i_nlink == 0)
 		invalidate_new_inode = 1;
 	journal_tail = nova_create_rename_transaction(sb, old_inode, old_dir,
@@ -851,17 +842,14 @@ static int nova_rename(struct inode *old_dir,
 	PERSISTENT_BARRIER();
 
 	nova_commit_lite_transaction(sb, journal_tail, cpu);
-	nova_memlock_journal(sb);
 	spin_unlock(&sbi->journal_locks[cpu]);
 
-	nova_memunlock_inode(sb, old_pi);
 	nova_update_alter_inode(sb, old_inode, old_pi);
 	nova_update_alter_inode(sb, old_dir, old_pidir);
 	if (old_dir != new_dir)
 		nova_update_alter_inode(sb, new_dir, new_pidir);
 	if (new_inode)
 		nova_update_alter_inode(sb, new_inode, new_pi);
-	nova_memlock_inode(sb, old_pi);
 
 	nova_invalidate_link_change_entry(sb, old_linkc1);
 	nova_invalidate_link_change_entry(sb, old_linkc2);

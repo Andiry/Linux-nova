@@ -44,7 +44,6 @@
 
 int measure_timing;
 int metadata_csum;
-int wprotect;
 int dram_struct_csum;
 int support_clwb;
 int inplace_data_updates;
@@ -54,9 +53,6 @@ MODULE_PARM_DESC(measure_timing, "Timing measurement");
 
 module_param(metadata_csum, int, 0444);
 MODULE_PARM_DESC(metadata_csum, "Protect metadata structures with replication and checksums");
-
-module_param(wprotect, int, 0444);
-MODULE_PARM_DESC(wprotect, "Write-protect pmem region and use CR0.WP to allow updates");
 
 module_param(inplace_data_updates, int, 0444);
 MODULE_PARM_DESC(inplace_data_updates, "Perform data updates in-place (i.e., not atomically)");
@@ -175,7 +171,7 @@ static loff_t nova_max_size(int bits)
 
 enum {
 	Opt_bpi, Opt_init, Opt_snapshot, Opt_mode, Opt_uid,
-	Opt_gid, Opt_dax, Opt_wprotect,
+	Opt_gid, Opt_dax,
 	Opt_err_cont, Opt_err_panic, Opt_err_ro,
 	Opt_dbgmask, Opt_err
 };
@@ -188,7 +184,6 @@ static const match_table_t tokens = {
 	{ Opt_uid,	     "uid=%u"		  },
 	{ Opt_gid,	     "gid=%u"		  },
 	{ Opt_dax,	     "dax"		  },
-	{ Opt_wprotect,	     "wprotect"		  },
 	{ Opt_err_cont,	     "errors=continue"	  },
 	{ Opt_err_panic,     "errors=panic"	  },
 	{ Opt_err_ro,	     "errors=remount-ro"  },
@@ -269,12 +264,6 @@ static int nova_parse_options(char *options, struct nova_sb_info *sbi,
 		case Opt_dax:
 			set_opt(sbi->s_mount_opt, DAX);
 			break;
-		case Opt_wprotect:
-			if (remount)
-				goto bad_opt;
-			set_opt(sbi->s_mount_opt, PROTECT);
-			nova_info("NOVA: Enabling new Write Protection (CR0.WP)\n");
-			break;
 		case Opt_dbgmask:
 			if (match_int(&args[0], &option))
 				goto bad_val;
@@ -334,8 +323,6 @@ inline void nova_sync_super(struct super_block *sb)
 	struct nova_super_block *super = nova_get_super(sb);
 	struct nova_super_block *super_redund;
 
-	nova_memunlock_super(sb);
-
 	super_redund = nova_get_redund_super(sb);
 
 	memcpy_to_pmem_nocache((void *)super, (void *)sbi->nova_sb,
@@ -345,8 +332,6 @@ inline void nova_sync_super(struct super_block *sb)
 	memcpy_to_pmem_nocache((void *)super_redund, (void *)sbi->nova_sb,
 		sizeof(struct nova_super_block));
 	PERSISTENT_BARRIER();
-
-	nova_memlock_super(sb);
 }
 
 /* Update checksum for the DRAM copy */
@@ -405,7 +390,6 @@ static struct nova_inode *nova_init(struct super_block *sb,
 
 	super = nova_get_super(sb);
 
-	nova_memunlock_reserved(sb, super);
 	/* clear out super-block and inode table */
 	memset_nt(super, 0, sbi->head_reserved_blocks * sbi->blocksize);
 
@@ -419,8 +403,6 @@ static struct nova_inode *nova_init(struct super_block *sb,
 
 	memset(&update, 0, sizeof(struct nova_inode_update));
 	nova_update_inode(sb, &sbi->snapshot_si->vfs_inode, pi, &update, 1);
-
-	nova_memlock_reserved(sb, super);
 
 	nova_init_blockmap(sb, 0);
 
@@ -448,7 +430,6 @@ static struct nova_inode *nova_init(struct super_block *sb,
 	root_i = nova_get_inode_by_ino(sb, NOVA_ROOT_INO);
 	nova_dbgv("%s: Allocate root inode @ 0x%p\n", __func__, root_i);
 
-	nova_memunlock_inode(sb, root_i);
 	root_i->i_mode = cpu_to_le16(sbi->mode | S_IFDIR);
 	root_i->i_uid = cpu_to_le32(from_kuid(&init_user_ns, sbi->uid));
 	root_i->i_gid = cpu_to_le32(from_kgid(&init_user_ns, sbi->gid));
@@ -462,7 +443,6 @@ static struct nova_inode *nova_init(struct super_block *sb,
 	root_i->valid = 1;
 	/* nova_sync_inode(root_i); */
 	nova_flush_buffer(root_i, sizeof(*root_i), false);
-	nova_memlock_inode(sb, root_i);
 
 	epoch_id = nova_get_epoch_id(sb);
 	nova_append_dir_init_entries(sb, root_i, NOVA_ROOT_INO,
@@ -610,10 +590,9 @@ static int nova_fill_super(struct super_block *sb, void *data, int silent)
 	}
 
 
-	nova_dbg("measure timing %d, metadata checksum %d, inplace update %d, wprotect %d, DRAM checksum %d\n",
+	nova_dbg("measure timing %d, metadata checksum %d, inplace update %d, DRAM checksum %d\n",
 		measure_timing, metadata_csum,
-		inplace_data_updates, wprotect,
-		dram_struct_csum);
+		inplace_data_updates, dram_struct_csum);
 
 	get_random_bytes(&random, sizeof(u32));
 	atomic_set(&sbi->next_generation, random);
@@ -826,8 +805,6 @@ static int nova_show_options(struct seq_file *seq, struct dentry *root)
 	if (test_opt(root->d_sb, ERRORS_PANIC))
 		seq_puts(seq, ",errors=panic");
 	/* memory protection disabled by default */
-	if (test_opt(root->d_sb, PROTECT))
-		seq_puts(seq, ",wprotect");
 	if (test_opt(root->d_sb, DAX))
 		seq_puts(seq, ",dax");
 

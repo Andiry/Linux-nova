@@ -93,9 +93,7 @@ static int nova_alloc_inode_table(struct super_block *sb,
 			return -ENOSPC;
 
 		block = nova_get_block_off(sb, blocknr, NOVA_BLOCK_TYPE_2M);
-		nova_memunlock_range(sb, inode_table, CACHELINE_SIZE);
 		inode_table->log_head = block;
-		nova_memlock_range(sb, inode_table, CACHELINE_SIZE);
 		nova_flush_buffer(inode_table, CACHELINE_SIZE, 0);
 	}
 
@@ -110,7 +108,6 @@ int nova_init_inode_table(struct super_block *sb)
 	int ret = 0;
 	int i;
 
-	nova_memunlock_inode(sb, pi);
 	pi->i_mode = 0;
 	pi->i_uid = 0;
 	pi->i_gid = 0;
@@ -119,7 +116,6 @@ int nova_init_inode_table(struct super_block *sb)
 	pi->nova_ino = NOVA_INODETABLE_INO;
 
 	pi->i_blk_type = NOVA_BLOCK_TYPE_2M;
-	nova_memlock_inode(sb, pi);
 
 	sih.ino = NOVA_INODETABLE_INO;
 	sih.i_blk_type = NOVA_BLOCK_TYPE_2M;
@@ -233,11 +229,7 @@ int nova_get_inode_address(struct super_block *sb, u64 ino, int version,
 
 			curr = nova_get_block_off(sb, blocknr,
 						NOVA_BLOCK_TYPE_2M);
-			nova_memunlock_range(sb, (void *)curr_addr,
-						CACHELINE_SIZE);
 			*(u64 *)(curr_addr) = curr;
-			nova_memlock_range(sb, (void *)curr_addr,
-						CACHELINE_SIZE);
 			nova_flush_buffer((void *)curr_addr,
 						NOVA_INODE_SIZE, 1);
 		}
@@ -375,11 +367,9 @@ static inline void check_eof_blocks(struct super_block *sb,
 	if ((pi->i_flags & cpu_to_le32(NOVA_EOFBLOCKS_FL)) &&
 		(inode->i_size + sb->s_blocksize) > (sih->i_blocks
 			<< sb->s_blocksize_bits)) {
-		nova_memunlock_inode(sb, pi);
 		pi->i_flags &= cpu_to_le32(~NOVA_EOFBLOCKS_FL);
 		nova_update_inode_checksum(pi);
 		nova_update_alter_inode(sb, inode, pi);
-		nova_memlock_inode(sb, pi);
 	}
 }
 
@@ -517,7 +507,7 @@ static int nova_read_inode(struct super_block *sb, struct inode *inode,
 	switch (inode->i_mode & S_IFMT) {
 	case S_IFREG:
 		inode->i_op = &nova_file_inode_operations;
-		if (inplace_data_updates && wprotect == 0)
+		if (inplace_data_updates)
 			inode->i_fop = &nova_dax_file_operations;
 		else
 			inode->i_fop = &nova_wrap_file_operations;
@@ -848,7 +838,6 @@ static int nova_free_inode_resource(struct super_block *sb,
 	int freed = 0;
 	struct nova_inode *alter_pi;
 
-	nova_memunlock_inode(sb, pi);
 	pi->deleted = 1;
 
 	if (pi->valid) {
@@ -862,7 +851,6 @@ static int nova_free_inode_resource(struct super_block *sb,
 						sih->alter_pi_addr);
 		memcpy_to_pmem_nocache(alter_pi, pi, sizeof(struct nova_inode));
 	}
-	nova_memlock_inode(sb, pi);
 
 	/* We need the log to free the blocks from the b-tree */
 	switch (__le16_to_cpu(pi->i_mode) & S_IFMT) {
@@ -1103,7 +1091,7 @@ struct inode *nova_new_vfs_inode(enum nova_new_inode_type type,
 	case TYPE_CREATE:
 		inode->i_op = &nova_file_inode_operations;
 		inode->i_mapping->a_ops = &nova_aops_dax;
-		if (inplace_data_updates && wprotect == 0)
+		if (inplace_data_updates)
 			inode->i_fop = &nova_dax_file_operations;
 		else
 			inode->i_fop = &nova_wrap_file_operations;
@@ -1131,7 +1119,6 @@ struct inode *nova_new_vfs_inode(enum nova_new_inode_type type,
 	 * Pi is part of the dir log so no transaction is needed,
 	 * but we need to flush to NVMM.
 	 */
-	nova_memunlock_inode(sb, pi);
 	pi->i_blk_type = NOVA_DEFAULT_BLOCK_TYPE;
 	pi->i_flags = nova_mask_flags(mode, diri->i_flags);
 	pi->nova_ino = ino;
@@ -1144,8 +1131,6 @@ struct inode *nova_new_vfs_inode(enum nova_new_inode_type type,
 								alter_pi_addr);
 		memcpy_to_pmem_nocache(alter_pi, pi, sizeof(struct nova_inode));
 	}
-
-	nova_memlock_inode(sb, pi);
 
 	si = NOVA_I(inode);
 	sih = &si->header;
@@ -1210,11 +1195,9 @@ void nova_dirty_inode(struct inode *inode, int flags)
 	/* only i_atime should have changed if at all.
 	 * we can do in-place atomic update
 	 */
-	nova_memunlock_inode(sb, pi);
 	pi->i_atime = cpu_to_le32(inode->i_atime.tv_sec);
 	nova_update_inode_checksum(pi);
 	nova_update_alter_inode(sb, inode, pi);
-	nova_memlock_inode(sb, pi);
 	/* Relax atime persistency */
 	nova_flush_buffer(&pi->i_atime, sizeof(pi->i_atime), 0);
 }
@@ -1466,5 +1449,4 @@ static int nova_writepages(struct address_space *mapping,
 const struct address_space_operations nova_aops_dax = {
 	.writepages		= nova_writepages,
 	.direct_IO		= nova_direct_IO,
-	/*.dax_mem_protect	= nova_dax_mem_protect,*/
 };

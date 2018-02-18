@@ -144,7 +144,6 @@ extern int measure_timing;
 extern int metadata_csum;
 extern int unsafe_metadata;
 extern int inplace_data_updates;
-extern int wprotect;
 extern int dram_struct_csum;
 
 extern unsigned int blk_type_to_shift[NOVA_BLOCK_TYPE_MAX];
@@ -510,8 +509,6 @@ static inline unsigned long BKDRHash(const char *str, int length)
 	return hash;
 }
 
-
-#include "mprotect.h"
 
 #include "log.h"
 
@@ -933,8 +930,6 @@ extern long nova_compat_ioctl(struct file *file, unsigned int cmd,
 
 
 /* mprotect.c */
-extern int nova_dax_mem_protect(struct super_block *sb,
-				 void *vaddr, unsigned long size, int rw);
 int nova_get_vma_overlap_range(struct super_block *sb,
 	struct nova_inode_info_header *sih, struct vm_area_struct *vma,
 	unsigned long entry_pgoff, unsigned long entry_pages,

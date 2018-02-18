@@ -195,6 +195,7 @@ static inline struct nova_super_block *nova_get_super(struct super_block *sb)
 	return (struct nova_super_block *)sbi->virt_addr;
 }
 
+extern void nova_error_mng(struct super_block *sb, const char *fmt, ...);
 extern struct super_block *nova_read_super(struct super_block *sb, void *data,
 	int silent);
 extern int nova_statfs(struct dentry *d, struct kstatfs *buf);

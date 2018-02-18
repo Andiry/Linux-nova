@@ -243,9 +243,7 @@ static int nova_repair_entry_pr(struct super_block *sb, void *entry)
 	if (entry_pr == NULL || alter_pr == NULL)
 		BUG();
 
-	nova_memunlock_range(sb, entry_pr, POISON_RADIUS);
 	ret = memcpy_mcsafe(entry_pr, alter_pr, POISON_RADIUS);
-	nova_memlock_range(sb, entry_pr, POISON_RADIUS);
 	nova_flush_buffer(entry_pr, POISON_RADIUS, 0);
 
 	/* alter_entry shows media error during memcpy */
@@ -265,9 +263,7 @@ static int nova_repair_entry(struct super_block *sb, void *bad, void *good,
 {
 	int ret;
 
-	nova_memunlock_range(sb, bad, entry_size);
 	ret = memcpy_to_pmem_nocache(bad, good, entry_size);
-	nova_memlock_range(sb, bad, entry_size);
 
 	if (ret == 0)
 		nova_dbg("%s: entry error repaired\n", __func__);
@@ -393,9 +389,7 @@ static int nova_repair_inode_pr(struct super_block *sb,
 	if (bad_pr == NULL || good_pr == NULL)
 		BUG();
 
-	nova_memunlock_range(sb, bad_pr, POISON_RADIUS);
 	ret = memcpy_mcsafe(bad_pr, good_pr, POISON_RADIUS);
-	nova_memlock_range(sb, bad_pr, POISON_RADIUS);
 	nova_flush_buffer(bad_pr, POISON_RADIUS, 0);
 
 	/* good_pi shows media error during memcpy */
@@ -415,10 +409,8 @@ static int nova_repair_inode(struct super_block *sb, struct nova_inode *bad_pi,
 {
 	int ret;
 
-	nova_memunlock_inode(sb, bad_pi);
 	ret = memcpy_to_pmem_nocache(bad_pi, good_copy,
 					sizeof(struct nova_inode));
-	nova_memlock_inode(sb, bad_pi);
 
 	if (ret == 0)
 		nova_dbg("%s: inode %llu error repaired\n", __func__,

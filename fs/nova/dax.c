@@ -56,7 +56,6 @@ static inline int nova_handle_partial_block(struct super_block *sb,
 	struct nova_sb_info *sbi = NOVA_SB(sb);
 	struct nova_file_write_entry *entryc, entry_copy;
 
-	nova_memunlock_block(sb, kmem);
 	if (entry == NULL) {
 		/* Fill zero */
 		if (support_clwb)
@@ -78,7 +77,6 @@ static inline int nova_handle_partial_block(struct super_block *sb,
 					offset, length, kmem);
 
 	}
-	nova_memlock_block(sb, kmem);
 	if (support_clwb)
 		nova_flush_buffer(kmem + offset, length, 0);
 	return 0;
@@ -518,10 +516,8 @@ ssize_t do_nova_inplace_file_write(struct file *filp,
 		/* Now copy from user buf */
 //		nova_dbg("Write: %p\n", kmem);
 		NOVA_START_TIMING(memcpy_w_nvmm_t, memcpy_time);
-		nova_memunlock_range(sb, kmem + offset, bytes);
 		copied = bytes - memcpy_to_pmem_nocache(kmem + offset,
 						buf, bytes);
-		nova_memlock_range(sb, kmem + offset, bytes);
 		NOVA_END_TIMING(memcpy_w_nvmm_t, memcpy_time);
 
 		if (pos + copied > inode->i_size)
@@ -589,9 +585,7 @@ ssize_t do_nova_inplace_file_write(struct file *filp,
 	inode->i_blocks = sih->i_blocks;
 
 	if (update_log) {
-		nova_memunlock_inode(sb, pi);
 		nova_update_inode(sb, inode, pi, &update, 1);
-		nova_memlock_inode(sb, pi);
 		NOVA_STATS_ADD(inplace_new_blocks, 1);
 
 		/* Update file tree */
@@ -787,9 +781,7 @@ again:
 	data_bits = blk_type_to_shift[sih->i_blk_type];
 	sih->i_blocks += (num_blocks << (data_bits - sb->s_blocksize_bits));
 
-	nova_memunlock_inode(sb, pi);
 	nova_update_inode(sb, inode, pi, &update, 1);
-	nova_memlock_inode(sb, pi);
 
 	ret = nova_reassign_file_tree(sb, sih, update.curr_entry);
 	if (ret) {

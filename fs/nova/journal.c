@@ -170,7 +170,6 @@ static int nova_recover_lite_journal(struct super_block *sb,
 	struct nova_lite_journal_entry *entry;
 	u64 temp;
 
-	nova_memunlock_journal(sb);
 	temp = pair->journal_head;
 	while (temp != pair->journal_tail) {
 		entry = (struct nova_lite_journal_entry *)nova_get_block(sb,
@@ -180,7 +179,6 @@ static int nova_recover_lite_journal(struct super_block *sb,
 	}
 
 	pair->journal_tail = pair->journal_head;
-	nova_memlock_journal(sb);
 	nova_flush_buffer(&pair->journal_head, CACHELINE_SIZE, 1);
 
 	return 0;
@@ -462,10 +460,8 @@ int nova_lite_journal_hard_init(struct super_block *sb)
 			return -ENOSPC;
 
 		block = nova_get_block_off(sb, blocknr, NOVA_BLOCK_TYPE_4K);
-		nova_memunlock_range(sb, pair, CACHELINE_SIZE);
 		pair->journal_head = pair->journal_tail = block;
 		nova_flush_buffer(pair, CACHELINE_SIZE, 0);
-		nova_memlock_range(sb, pair, CACHELINE_SIZE);
 	}
 
 	PERSISTENT_BARRIER();

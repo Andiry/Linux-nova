@@ -25,53 +25,6 @@
 #include "nova.h"
 #include "inode.h"
 
-static inline void wprotect_disable(void)
-{
-	unsigned long cr0_val;
-
-	cr0_val = read_cr0();
-	cr0_val &= (~X86_CR0_WP);
-	write_cr0(cr0_val);
-}
-
-static inline void wprotect_enable(void)
-{
-	unsigned long cr0_val;
-
-	cr0_val = read_cr0();
-	cr0_val |= X86_CR0_WP;
-	write_cr0(cr0_val);
-}
-
-/* FIXME: Assumes that we are always called in the right order.
- * nova_writeable(vaddr, size, 1);
- * nova_writeable(vaddr, size, 0);
- */
-int nova_writeable(void *vaddr, unsigned long size, int rw)
-{
-	static unsigned long flags;
-	timing_t wprotect_time;
-
-	NOVA_START_TIMING(wprotect_t, wprotect_time);
-	if (rw) {
-		local_irq_save(flags);
-		wprotect_disable();
-	} else {
-		wprotect_enable();
-		local_irq_restore(flags);
-	}
-	NOVA_END_TIMING(wprotect_t, wprotect_time);
-	return 0;
-}
-
-int nova_dax_mem_protect(struct super_block *sb, void *vaddr,
-			  unsigned long size, int rw)
-{
-	if (!nova_is_wprotected(sb))
-		return 0;
-	return nova_writeable(vaddr, size, rw);
-}
-
 int nova_get_vma_overlap_range(struct super_block *sb,
 	struct nova_inode_info_header *sih, struct vm_area_struct *vma,
 	unsigned long entry_pgoff, unsigned long entry_pages,

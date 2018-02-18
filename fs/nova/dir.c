@@ -234,8 +234,6 @@ int nova_append_dir_init_entries(struct super_block *sb,
 		return -ENOMEM;
 	}
 
-	nova_memunlock_inode(sb, pi);
-
 	pi->log_tail = pi->log_head = new_block;
 
 	de_entry = (struct nova_dentry *)nova_get_block(sb, new_block);
@@ -243,8 +241,6 @@ int nova_append_dir_init_entries(struct super_block *sb,
 	length = nova_init_dentry(sb, de_entry, self_ino, parent_ino, epoch_id);
 
 	nova_update_tail(pi, new_block + length);
-
-	nova_memlock_inode(sb, pi);
 
 	if (metadata_csum == 0)
 		return 0;
@@ -255,7 +251,6 @@ int nova_append_dir_init_entries(struct super_block *sb,
 		nova_err(sb, "ERROR: no inode log page available\n");
 		return -ENOMEM;
 	}
-	nova_memunlock_inode(sb, pi);
 	pi->alter_log_tail = pi->alter_log_head = new_block;
 
 	de_entry = (struct nova_dentry *)nova_get_block(sb, new_block);
@@ -267,7 +262,6 @@ int nova_append_dir_init_entries(struct super_block *sb,
 						pi->alter_log_head);
 	nova_update_inode_checksum(pi);
 	nova_flush_buffer(pi, sizeof(struct nova_inode), 0);
-	nova_memlock_inode(sb, pi);
 
 	/* Get alternate inode address */
 	ret = nova_get_alter_inode_address(sb, self_ino, &alter_pi_addr);
@@ -278,9 +272,7 @@ int nova_append_dir_init_entries(struct super_block *sb,
 	if (!alter_pi)
 		return -EINVAL;
 
-	nova_memunlock_inode(sb, alter_pi);
 	memcpy_to_pmem_nocache(alter_pi, pi, sizeof(struct nova_inode));
-	nova_memlock_inode(sb, alter_pi);
 
 	return 0;
 }

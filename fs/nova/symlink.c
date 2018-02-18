@@ -52,10 +52,8 @@ int nova_block_symlink(struct super_block *sb, struct nova_inode *pi,
 	block = nova_get_block_off(sb, name_blocknr, NOVA_BLOCK_TYPE_4K);
 	blockp = (char *)nova_get_block(sb, block);
 
-	nova_memunlock_block(sb, blockp);
 	memcpy_to_pmem_nocache(blockp, symname, len);
 	blockp[len] = '\0';
-	nova_memlock_block(sb, blockp);
 
 	/* Apply a write entry to the log page */
 	time = current_time(inode).tv_sec;
@@ -70,9 +68,7 @@ int nova_block_symlink(struct super_block *sb, struct nova_inode *pi,
 		return ret;
 	}
 
-	nova_memunlock_inode(sb, pi);
 	nova_update_inode(sb, inode, pi, &update, 1);
-	nova_memlock_inode(sb, pi);
 	sih->trans_id++;
 
 	return 0;
