@@ -250,7 +250,6 @@ void nova_init_file_write_entry(struct super_block *sb,
 	memset(entry, 0, sizeof(struct nova_file_write_entry));
 	entry->entry_type = FILE_WRITE;
 	entry->reassigned = 0;
-	entry->updating = 0;
 	entry->epoch_id = epoch_id;
 	entry->trans_id = sih->trans_id;
 	entry->pgoff = cpu_to_le64(pgoff);
@@ -261,179 +260,6 @@ void nova_init_file_write_entry(struct super_block *sb,
 	entry->mtime = cpu_to_le32(time);
 
 	entry->size = file_size;
-}
-
-int nova_protect_file_data(struct super_block *sb, struct inode *inode,
-	loff_t pos, size_t count, const char __user *buf, unsigned long blocknr,
-	bool inplace)
-{
-	struct nova_inode_info *si = NOVA_I(inode);
-	struct nova_inode_info_header *sih = &si->header;
-	size_t offset, eblk_offset, bytes, left;
-	unsigned long start_blk, end_blk, num_blocks, nvmm, nvmmoff;
-	unsigned long blocksize = sb->s_blocksize;
-	unsigned int blocksize_bits = sb->s_blocksize_bits;
-	u8 *blockbuf, *blockptr;
-	struct nova_file_write_entry *entry;
-	struct nova_file_write_entry *entryc, entry_copy;
-	bool mapped, nvmm_ok;
-	int ret = 0;
-	timing_t protect_file_data_time, memcpy_time;
-
-	NOVA_START_TIMING(protect_file_data_t, protect_file_data_time);
-
-	offset = pos & (blocksize - 1);
-	num_blocks = ((offset + count - 1) >> blocksize_bits) + 1;
-	start_blk = pos >> blocksize_bits;
-	end_blk = start_blk + num_blocks - 1;
-
-	NOVA_START_TIMING(protect_memcpy_t, memcpy_time);
-	blockbuf = kmalloc(blocksize, GFP_KERNEL);
-	if (blockbuf == NULL) {
-		nova_err(sb, "%s: block buffer allocation error\n", __func__);
-		return -ENOMEM;
-	}
-
-	bytes = blocksize - offset;
-	if (bytes > count)
-		bytes = count;
-
-	left = copy_from_user(blockbuf + offset, buf, bytes);
-	NOVA_END_TIMING(protect_memcpy_t, memcpy_time);
-	if (unlikely(left != 0)) {
-		nova_err(sb, "%s: not all data is copied from user! expect to copy %zu bytes, actually copied %zu bytes\n",
-			 __func__, bytes, bytes - left);
-		ret = -EFAULT;
-		goto out;
-	}
-
-	entryc = (metadata_csum == 0) ? entry : &entry_copy;
-
-	if (offset != 0) {
-		NOVA_STATS_ADD(protect_head, 1);
-		entry = nova_get_write_entry(sb, sih, start_blk);
-		if (entry != NULL) {
-			if (metadata_csum == 0)
-				entryc = entry;
-			else if (!nova_verify_entry_csum(sb, entry, entryc))
-				return -EIO;
-
-			/* make sure data in the partial block head is good */
-			nvmm = get_nvmm(sb, sih, entryc, start_blk);
-			nvmmoff = nova_get_block_off(sb, nvmm, sih->i_blk_type);
-			blockptr = (u8 *) nova_get_block(sb, nvmmoff);
-
-			mapped = nova_find_pgoff_in_vma(inode, start_blk);
-			if (data_csum > 0 && !mapped && !inplace) {
-				nvmm_ok = nova_verify_data_csum(sb, sih, nvmm,
-								0, offset);
-				if (!nvmm_ok) {
-					ret = -EIO;
-					goto out;
-				}
-			}
-
-			ret = memcpy_mcsafe(blockbuf, blockptr, offset);
-			if (ret < 0)
-				goto out;
-		} else {
-			memset(blockbuf, 0, offset);
-		}
-
-		/* copying existing checksums from nvmm can be even slower than
-		 * re-computing checksums of a whole block.
-		if (data_csum > 0)
-			nova_copy_partial_block_csum(sb, sih, entry, start_blk,
-							offset, blocknr, false);
-		*/
-	}
-
-	if (num_blocks == 1)
-		goto eblk;
-
-	do {
-		if (inplace)
-			nova_update_block_csum_parity(sb, sih, blockbuf,
-							blocknr, offset, bytes);
-		else
-			nova_update_block_csum_parity(sb, sih, blockbuf,
-							blocknr, 0, blocksize);
-
-		blocknr++;
-		pos += bytes;
-		buf += bytes;
-		count -= bytes;
-		offset = pos & (blocksize - 1);
-
-		bytes = count < blocksize ? count : blocksize;
-		left = copy_from_user(blockbuf, buf, bytes);
-		if (unlikely(left != 0)) {
-			nova_err(sb, "%s: not all data is copied from user!  expect to copy %zu bytes, actually copied %zu bytes\n",
-				 __func__, bytes, bytes - left);
-			ret = -EFAULT;
-			goto out;
-		}
-	} while (count > blocksize);
-
-eblk:
-	eblk_offset = (pos + count) & (blocksize - 1);
-
-	if (eblk_offset != 0) {
-		NOVA_STATS_ADD(protect_tail, 1);
-		entry = nova_get_write_entry(sb, sih, end_blk);
-		if (entry != NULL) {
-			if (metadata_csum == 0)
-				entryc = entry;
-			else if (!nova_verify_entry_csum(sb, entry, entryc))
-				return -EIO;
-
-			/* make sure data in the partial block tail is good */
-			nvmm = get_nvmm(sb, sih, entryc, end_blk);
-			nvmmoff = nova_get_block_off(sb, nvmm, sih->i_blk_type);
-			blockptr = (u8 *) nova_get_block(sb, nvmmoff);
-
-			mapped = nova_find_pgoff_in_vma(inode, end_blk);
-			if (data_csum > 0 && !mapped && !inplace) {
-				nvmm_ok = nova_verify_data_csum(sb, sih, nvmm,
-					eblk_offset, blocksize - eblk_offset);
-				if (!nvmm_ok) {
-					ret = -EIO;
-					goto out;
-				}
-			}
-
-			ret = memcpy_mcsafe(blockbuf + eblk_offset,
-						blockptr + eblk_offset,
-						blocksize - eblk_offset);
-			if (ret < 0)
-				goto out;
-		} else {
-			memset(blockbuf + eblk_offset, 0,
-				blocksize - eblk_offset);
-		}
-
-		/* copying existing checksums from nvmm can be even slower than
-		 * re-computing checksums of a whole block.
-		if (data_csum > 0)
-			nova_copy_partial_block_csum(sb, sih, entry, end_blk,
-						eblk_offset, blocknr, true);
-		*/
-	}
-
-	if (inplace)
-		nova_update_block_csum_parity(sb, sih, blockbuf, blocknr,
-							offset, bytes);
-	else
-		nova_update_block_csum_parity(sb, sih, blockbuf, blocknr,
-							0, blocksize);
-
-out:
-	if (blockbuf != NULL)
-		kfree(blockbuf);
-
-	NOVA_END_TIMING(protect_file_data_t, protect_file_data_time);
-
-	return ret;
 }
 
 static bool nova_get_verify_entry(struct super_block *sb,
@@ -651,8 +477,6 @@ ssize_t do_nova_inplace_file_write(struct file *filp,
 			blocknr = get_nvmm(sb, sih, entryc, start_blk);
 			blk_off = blocknr << PAGE_SHIFT;
 			allocated = ent_blks;
-			if (data_csum || data_parity)
-				nova_set_write_entry_updating(sb, entry, 1);
 		} else {
 			/* Allocate blocks to fill hole */
 			allocated = nova_new_data_blocks(sb, sih, &blocknr,
@@ -699,13 +523,6 @@ ssize_t do_nova_inplace_file_write(struct file *filp,
 						buf, bytes);
 		nova_memlock_range(sb, kmem + offset, bytes);
 		NOVA_END_TIMING(memcpy_w_nvmm_t, memcpy_time);
-
-		if (data_csum > 0 || data_parity > 0) {
-			ret = nova_protect_file_data(sb, inode, pos, bytes,
-						buf, blocknr, !hole_fill);
-			if (ret)
-				goto out;
-		}
 
 		if (pos + copied > inode->i_size)
 			file_size = cpu_to_le64(pos + copied);
@@ -1122,50 +939,6 @@ static inline int nova_rbtree_compare_vma(struct vma_item *curr,
 	return 0;
 }
 
-static int nova_append_write_mmap_to_log(struct super_block *sb,
-	struct inode *inode, struct vma_item *item)
-{
-	struct vm_area_struct *vma = item->vma;
-	struct nova_inode *pi;
-	struct nova_mmap_entry data;
-	struct nova_inode_update update;
-	unsigned long num_pages;
-	u64 epoch_id;
-	int ret;
-
-	/* Only for csum and parity update */
-	if (data_csum == 0 && data_parity == 0)
-		return 0;
-
-	pi = nova_get_inode(sb, inode);
-	epoch_id = nova_get_epoch_id(sb);
-	update.tail = update.alter_tail = 0;
-
-	memset(&data, 0, sizeof(struct nova_mmap_entry));
-	data.entry_type = MMAP_WRITE;
-	data.epoch_id = epoch_id;
-	data.pgoff = cpu_to_le64(vma->vm_pgoff);
-	num_pages = (vma->vm_end - vma->vm_start) >> PAGE_SHIFT;
-	data.num_pages = cpu_to_le64(num_pages);
-	data.invalid = 0;
-
-	nova_dbgv("%s : Appending mmap log entry for inode %lu, pgoff %llu, %llu pages\n",
-			__func__, inode->i_ino,
-			data.pgoff, data.num_pages);
-
-	ret = nova_append_mmap_entry(sb, pi, inode, &data, &update, item);
-	if (ret) {
-		nova_dbg("%s: append write mmap entry failure\n", __func__);
-		goto out;
-	}
-
-	nova_memunlock_inode(sb, pi);
-	nova_update_inode(sb, inode, pi, &update, 1);
-	nova_memlock_inode(sb, pi);
-out:
-	return ret;
-}
-
 int nova_insert_write_vma(struct vm_area_struct *vma)
 {
 	struct address_space *mapping = vma->vm_file->f_mapping;
@@ -1179,7 +952,7 @@ int nova_insert_write_vma(struct vm_area_struct *vma)
 	struct rb_node **temp, *parent;
 	int compVal;
 	int insert = 0;
-	int ret;
+	int ret = 0;
 	timing_t insert_vma_time;
 
 
@@ -1201,11 +974,6 @@ int nova_insert_write_vma(struct vm_area_struct *vma)
 			vma->vm_pgoff);
 
 	inode_lock(inode);
-
-	/* Append to log */
-	ret = nova_append_write_mmap_to_log(sb, inode, item);
-	if (ret)
-		goto out;
 
 	temp = &(sih->vma_tree.rb_node);
 	parent = NULL;
@@ -1277,7 +1045,6 @@ static int nova_remove_write_vma(struct vm_area_struct *vma)
 		} else if (compVal == 1) {
 			temp = temp->rb_right;
 		} else {
-			nova_reset_vma_csum_parity(sb, curr);
 			rb_erase(&curr->node, &sih->vma_tree);
 			found = 1;
 			break;

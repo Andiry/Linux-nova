@@ -12,18 +12,9 @@ struct free_list {
 
 	int		index; // Which CPU do I belong to?
 
-	/* Where are the data checksum blocks */
-	unsigned long	csum_start;
-	unsigned long	replica_csum_start;
-	unsigned long	num_csum_blocks;
-
-	/* Where are the data parity blocks */
-	unsigned long	parity_start;
-	unsigned long	replica_parity_start;
-	unsigned long	num_parity_blocks;
-
-	/* Start and end of allocatable range, inclusive. Excludes csum and
-	 * parity blocks.
+	/*
+	 * Start and end of allocatable range, inclusive.
+	 * Excludes csum blocks.
 	 */
 	unsigned long	block_start;
 	unsigned long	block_end;

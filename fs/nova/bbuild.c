@@ -1099,9 +1099,6 @@ again:
 						WENTRY(entryc), ring, base, bm);
 			curr_p += sizeof(struct nova_file_write_entry);
 			break;
-		case MMAP_WRITE:
-			curr_p += sizeof(struct nova_mmap_entry);
-			break;
 		default:
 			nova_dbg("%s: unknown type %d, 0x%llx\n",
 						__func__, type, curr_p);

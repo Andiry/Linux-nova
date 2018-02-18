@@ -45,8 +45,6 @@
 int measure_timing;
 int metadata_csum;
 int wprotect;
-int data_csum;
-int data_parity;
 int dram_struct_csum;
 int support_clwb;
 int inplace_data_updates;
@@ -59,12 +57,6 @@ MODULE_PARM_DESC(metadata_csum, "Protect metadata structures with replication an
 
 module_param(wprotect, int, 0444);
 MODULE_PARM_DESC(wprotect, "Write-protect pmem region and use CR0.WP to allow updates");
-
-module_param(data_csum, int, 0444);
-MODULE_PARM_DESC(data_csum, "Detect corruption of data pages using checksum");
-
-module_param(data_parity, int, 0444);
-MODULE_PARM_DESC(data_parity, "Protect file data using RAID-5 style parity.");
 
 module_param(inplace_data_updates, int, 0444);
 MODULE_PARM_DESC(inplace_data_updates, "Perform data updates in-place (i.e., not atomically)");
@@ -449,8 +441,6 @@ static struct nova_inode *nova_init(struct super_block *sb,
 	sbi->nova_sb->s_magic = cpu_to_le32(NOVA_SUPER_MAGIC);
 	sbi->nova_sb->s_epoch_id = 0;
 	sbi->nova_sb->s_metadata_csum = metadata_csum;
-	sbi->nova_sb->s_data_csum = data_csum;
-	sbi->nova_sb->s_data_parity = data_parity;
 	nova_update_super_crc(sb);
 
 	nova_sync_super(sb);
@@ -536,18 +526,6 @@ static int nova_check_module_params(struct super_block *sb)
 		metadata_csum = sbi->nova_sb->s_metadata_csum;
 	}
 
-	if (sbi->nova_sb->s_data_csum != data_csum) {
-		nova_dbg("%s data checksum\n",
-			sbi->nova_sb->s_data_csum ? "Enable" : "Disable");
-		data_csum = sbi->nova_sb->s_data_csum;
-	}
-
-	if (sbi->nova_sb->s_data_parity != data_parity) {
-		nova_dbg("%s data parity\n",
-			sbi->nova_sb->s_data_parity ? "Enable" : "Disable");
-		data_parity = sbi->nova_sb->s_data_parity;
-	}
-
 	return 0;
 }
 
@@ -584,7 +562,6 @@ static int nova_fill_super(struct super_block *sb, void *data, int silent)
 	struct inode *root_i = NULL;
 	struct inode_map *inode_map;
 	unsigned long blocksize;
-	size_t strp_size = NOVA_STRIPE_SIZE;
 	u32 random = 0;
 	int retval = -EINVAL;
 	int i;
@@ -633,10 +610,10 @@ static int nova_fill_super(struct super_block *sb, void *data, int silent)
 	}
 
 
-	nova_dbg("measure timing %d, metadata checksum %d, inplace update %d, wprotect %d, data checksum %d, data parity %d, DRAM checksum %d\n",
+	nova_dbg("measure timing %d, metadata checksum %d, inplace update %d, wprotect %d, DRAM checksum %d\n",
 		measure_timing, metadata_csum,
-		inplace_data_updates, wprotect,	 data_csum,
-		data_parity, dram_struct_csum);
+		inplace_data_updates, wprotect,
+		dram_struct_csum);
 
 	get_random_bytes(&random, sizeof(u32));
 	atomic_set(&sbi->next_generation, random);
@@ -671,18 +648,6 @@ static int nova_fill_super(struct super_block *sb, void *data, int silent)
 	if (!sbi->zeroed_page) {
 		retval = -ENOMEM;
 		nova_dbg("%s: sbi->zeroed_page failed.",
-			 __func__);
-		goto out;
-	}
-
-	for (i = 0; i < 8; i++)
-		sbi->zero_csum[i] = nova_crc32c(NOVA_INIT_CSUM,
-				sbi->zeroed_page, strp_size);
-	sbi->zero_parity = kzalloc(strp_size, GFP_KERNEL);
-
-	if (!sbi->zero_parity) {
-		retval = -ENOMEM;
-		nova_err(sb, "%s: sbi->zero_parity failed.",
 			 __func__);
 		goto out;
 	}
@@ -804,9 +769,6 @@ out:
 	kfree(sbi->zeroed_page);
 	sbi->zeroed_page = NULL;
 
-	kfree(sbi->zero_parity);
-	sbi->zero_parity = NULL;
-
 	kfree(sbi->free_lists);
 	sbi->free_lists = NULL;
 
@@ -927,7 +889,6 @@ static void nova_put_super(struct super_block *sb)
 	nova_delete_free_lists(sb);
 
 	kfree(sbi->zeroed_page);
-	kfree(sbi->zero_parity);
 	nova_dbgmask = 0;
 	kfree(sbi->free_lists);
 	kfree(sbi->journal_locks);

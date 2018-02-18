@@ -165,7 +165,6 @@ static int nova_seq_IO_show(struct seq_file *seq, void *v)
 	seq_printf(seq, "Dirty pages %llu\n", IOstats[dirty_pages]);
 	seq_printf(seq, "Protect head %llu, tail %llu\n",
 			IOstats[protect_head], IOstats[protect_tail]);
-	seq_printf(seq, "Block csum parity %llu\n", IOstats[block_csum_parity]);
 	seq_printf(seq, "Page fault %llu, dax cow fault %llu, dax cow fault during snapshot creation %llu\n"
 			"CoW write overlap mmap range %llu, mapping/pfn updated pages %llu\n",
 			Countstats[mmap_fault_t], Countstats[mmap_cow_t],
@@ -225,11 +224,6 @@ static int nova_seq_show_allocator(struct seq_file *seq, void *v)
 					free_list->last_node->range_low,
 					free_list->last_node->range_high);
 		}
-
-		seq_printf(seq, "Free list %d: csum start %lu, replica csum start %lu, csum blocks %lu, parity start %lu, parity blocks %lu\n",
-			i, free_list->csum_start, free_list->replica_csum_start,
-			free_list->num_csum_blocks,
-			free_list->parity_start, free_list->num_parity_blocks);
 
 		seq_printf(seq, "Free list %d: alloc log count %lu, allocated log pages %lu, alloc data count %lu, allocated data pages %lu, free log count %lu, freed log pages %lu, free data count %lu, freed data pages %lu\n",
 			   i,

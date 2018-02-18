@@ -145,8 +145,6 @@ extern int metadata_csum;
 extern int unsafe_metadata;
 extern int inplace_data_updates;
 extern int wprotect;
-extern int data_csum;
-extern int data_parity;
 extern int dram_struct_csum;
 
 extern unsigned int blk_type_to_shift[NOVA_BLOCK_TYPE_MAX];
@@ -396,7 +394,6 @@ struct nova_range_node_lowhigh {
 struct nova_range_node {
 	struct rb_node node;
 	struct vm_area_struct *vma;
-	unsigned long mmap_entry;
 	unsigned long range_low;
 	unsigned long range_high;
 	u32	csum;		/* Protect vma, range low/high */
@@ -406,7 +403,6 @@ struct vma_item {
 	/* Reuse header of nova_range_node struct */
 	struct rb_node node;
 	struct vm_area_struct *vma;
-	unsigned long mmap_entry;
 };
 
 static inline u32 nova_calculate_range_node_csum(struct nova_range_node *node)
@@ -576,9 +572,6 @@ static inline u64 nova_find_nvmm_block(struct super_block *sb,
 			return 0;
 	}
 
-	/* Don't check entry here as someone else may be modifying it
-	 * when called from reset_vma_csum_parity
-	 */
 	entryc = &entry_copy;
 	if (memcpy_mcsafe(entryc, entry,
 			sizeof(struct nova_file_write_entry)) < 0)
@@ -829,94 +822,6 @@ static inline int is_dir_init_entry(struct super_block *sb,
 	return 0;
 }
 
-#include "balloc.h" // remove once we move the following functions away
-
-/* Checksum methods */
-static inline void *nova_get_data_csum_addr(struct super_block *sb, u64 strp_nr,
-	int replica)
-{
-	struct nova_sb_info *sbi = NOVA_SB(sb);
-	struct free_list *free_list;
-	unsigned long blocknr;
-	void *data_csum_addr;
-	u64 blockoff;
-	int index;
-	int BLOCK_SHIFT = PAGE_SHIFT - NOVA_STRIPE_SHIFT;
-
-	if (!data_csum) {
-		nova_dbg("%s: Data checksum is disabled!\n", __func__);
-		return NULL;
-	}
-
-	blocknr = strp_nr >> BLOCK_SHIFT;
-	index = blocknr / sbi->per_list_blocks;
-
-	if (index >= sbi->cpus) {
-		nova_dbg("%s: Invalid blocknr %lu\n", __func__, blocknr);
-		return NULL;
-	}
-
-	strp_nr -= (index * sbi->per_list_blocks) << BLOCK_SHIFT;
-	free_list = nova_get_free_list(sb, index);
-	if (replica == 0)
-		blockoff = free_list->csum_start << PAGE_SHIFT;
-	else
-		blockoff = free_list->replica_csum_start << PAGE_SHIFT;
-
-	/* Range test */
-	if (((NOVA_DATA_CSUM_LEN * strp_nr) >> PAGE_SHIFT) >=
-			free_list->num_csum_blocks) {
-		nova_dbg("%s: Invalid strp number %llu, free list %d\n",
-				__func__, strp_nr, free_list->index);
-		return NULL;
-	}
-
-	data_csum_addr = (u8 *) nova_get_block(sb, blockoff)
-				+ NOVA_DATA_CSUM_LEN * strp_nr;
-
-	return data_csum_addr;
-}
-
-static inline void *nova_get_parity_addr(struct super_block *sb,
-	unsigned long blocknr)
-{
-	struct nova_sb_info *sbi = NOVA_SB(sb);
-	struct free_list *free_list;
-	void *data_csum_addr;
-	u64 blockoff;
-	int index;
-	int BLOCK_SHIFT = PAGE_SHIFT - NOVA_STRIPE_SHIFT;
-
-	if (data_parity == 0) {
-		nova_dbg("%s: Data parity is disabled!\n", __func__);
-		return NULL;
-	}
-
-	index = blocknr / sbi->per_list_blocks;
-
-	if (index >= sbi->cpus) {
-		nova_dbg("%s: Invalid blocknr %lu\n", __func__, blocknr);
-		return NULL;
-	}
-
-	free_list = nova_get_free_list(sb, index);
-	blockoff = free_list->parity_start << PAGE_SHIFT;
-
-	/* Range test */
-	if (((blocknr - free_list->block_start) >> BLOCK_SHIFT) >=
-			free_list->num_parity_blocks) {
-		nova_dbg("%s: Invalid blocknr %lu, free list %d\n",
-				__func__, blocknr, free_list->index);
-		return NULL;
-	}
-
-	data_csum_addr = (u8 *) nova_get_block(sb, blockoff) +
-				((blocknr - free_list->block_start)
-				 << NOVA_STRIPE_SHIFT);
-
-	return data_csum_addr;
-}
-
 /* Function Prototypes */
 
 
@@ -932,20 +837,9 @@ int nova_recovery(struct super_block *sb);
 
 /* checksum.c */
 void nova_update_entry_csum(void *entry);
-int nova_update_block_csum(struct super_block *sb,
-	struct nova_inode_info_header *sih, u8 *block, unsigned long blocknr,
-	size_t offset, size_t bytes, int zero);
 int nova_update_alter_entry(struct super_block *sb, void *entry);
 int nova_check_inode_integrity(struct super_block *sb, u64 ino, u64 pi_addr,
 	u64 alter_pi_addr, struct nova_inode *pic, int check_replica);
-int nova_update_pgoff_csum(struct super_block *sb,
-	struct nova_inode_info_header *sih, struct nova_file_write_entry *entry,
-	unsigned long pgoff, int zero);
-bool nova_verify_data_csum(struct super_block *sb,
-	struct nova_inode_info_header *sih, unsigned long blocknr,
-	size_t offset, size_t bytes);
-int nova_update_truncated_block_csum(struct super_block *sb,
-	struct inode *inode, loff_t newsize);
 
 /*
  * Inodes and files operations
@@ -981,9 +875,6 @@ int nova_check_overlap_vmas(struct super_block *sb,
 int nova_handle_head_tail_blocks(struct super_block *sb,
 				 struct inode *inode, loff_t pos,
 				 size_t count, void *kmem);
-int nova_protect_file_data(struct super_block *sb, struct inode *inode,
-	loff_t pos, size_t count, const char __user *buf, unsigned long blocknr,
-	bool inplace);
 ssize_t nova_inplace_file_write(struct file *filp, const char __user *buf,
 				size_t len, loff_t *ppos);
 ssize_t do_nova_inplace_file_write(struct file *filp, const char __user *buf,
@@ -1055,29 +946,7 @@ extern const struct inode_operations nova_dir_inode_operations;
 extern const struct inode_operations nova_special_inode_operations;
 extern struct dentry *nova_get_parent(struct dentry *child);
 
-/* parity.c */
-int nova_update_pgoff_parity(struct super_block *sb,
-	struct nova_inode_info_header *sih, struct nova_file_write_entry *entry,
-	unsigned long pgoff, int zero);
-int nova_update_block_csum_parity(struct super_block *sb,
-	struct nova_inode_info_header *sih, u8 *block, unsigned long blocknr,
-	size_t offset, size_t bytes);
-int nova_restore_data(struct super_block *sb, unsigned long blocknr,
-	unsigned int badstrip_id, void *badstrip, int nvmmerr, u32 csum0,
-	u32 csum1, u32 *csum_good);
-int nova_update_truncated_block_parity(struct super_block *sb,
-	struct inode *inode, loff_t newsize);
-
 /* rebuild.c */
-int nova_reset_csum_parity_range(struct super_block *sb,
-	struct nova_inode_info_header *sih, struct nova_file_write_entry *entry,
-	unsigned long start_pgoff, unsigned long end_pgoff, int zero,
-	int check_entry);
-int nova_reset_mapping_csum_parity(struct super_block *sb,
-	struct inode *inode, struct address_space *mapping,
-	unsigned long start_pgoff, unsigned long end_pgoff);
-int nova_reset_vma_csum_parity(struct super_block *sb,
-	struct vma_item *item);
 int nova_rebuild_dir_inode_tree(struct super_block *sb,
 	struct nova_inode *pi, u64 pi_addr,
 	struct nova_inode_info_header *sih);

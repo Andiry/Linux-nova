@@ -143,12 +143,8 @@ static inline void nova_flush_buffer(void *buf, uint32_t len, bool fence)
  * In NOVA this size determines the size of a checksummed stripe, and it
  * equals to the affordable lost size of data per block (page).
  * Its value should be no less than the poison radius size of media errors.
- *
- * Support NOVA_STRIPE_SHIFT <= PAGE_SHIFT (NOVA file block size shift).
  */
 #define POISON_RADIUS		(512)
 #define POISON_MASK		(~(POISON_RADIUS - 1))
-#define NOVA_STRIPE_SHIFT	(9) /* size should be no less than PR_SIZE */
-#define NOVA_STRIPE_SIZE	(1 << NOVA_STRIPE_SHIFT)
 
 #endif /* _LINUX_NOVA_DEF_H */

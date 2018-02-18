@@ -42,7 +42,6 @@ enum nova_entry_type {
 	DIR_LOG,
 	SET_ATTR,
 	LINK_CHANGE,
-	MMAP_WRITE,
 	SNAPSHOT_INFO,
 	NEXT_PAGE,
 };
@@ -72,8 +71,7 @@ static inline void nova_set_entry_type(void *p, enum nova_entry_type type)
 struct nova_file_write_entry {
 	u8	entry_type;
 	u8	reassigned;	/* Data is not latest */
-	u8	updating;	/* Data is being written */
-	u8	padding;
+	u8	padding[2];
 	__le32	num_pages;
 	__le64	block;          /* offset of first block in this write */
 	__le64	pgoff;          /* file offset at the beginning of this write */
@@ -163,23 +161,6 @@ struct nova_link_change_entry {
 #define LCENTRY(entry)	((struct nova_link_change_entry *) entry)
 
 /*
- * MMap entry.  Records the fact that a region of the file is mmapped, so
- * parity and checksums are inoperative.
- */
-struct nova_mmap_entry {
-	u8	entry_type;
-	u8	invalid;
-	u8	paddings[6];
-	__le64	epoch_id;
-	__le64	pgoff;
-	__le64	num_pages;
-	__le32	csumpadding;
-	__le32	csum;
-} __attribute((__packed__));
-
-#define MMENTRY(entry)	((struct nova_mmap_entry *) entry)
-
-/*
  * Log entry for the creation of a snapshot.  Only occurs in the log of the
  * dedicated snapshot inode.
  */
@@ -251,9 +232,6 @@ static inline size_t nova_get_log_entry_size(struct super_block *sb,
 	case LINK_CHANGE:
 		size = sizeof(struct nova_link_change_entry);
 		break;
-	case MMAP_WRITE:
-		size = sizeof(struct nova_mmap_entry);
-		break;
 	case SNAPSHOT_INFO:
 		size = sizeof(struct nova_snapshot_info_entry);
 		break;
@@ -301,14 +279,9 @@ int nova_invalidate_link_change_entry(struct super_block *sb,
 int nova_append_link_change_entry(struct super_block *sb,
 	struct nova_inode *pi, struct inode *inode,
 	struct nova_inode_update *update, u64 *old_linkc, u64 epoch_id);
-int nova_set_write_entry_updating(struct super_block *sb,
-	struct nova_file_write_entry *entry, int set);
 int nova_inplace_update_write_entry(struct super_block *sb,
 	struct inode *inode, struct nova_file_write_entry *entry,
 	struct nova_log_entry_info *entry_info);
-int nova_append_mmap_entry(struct super_block *sb, struct nova_inode *pi,
-	struct inode *inode, struct nova_mmap_entry *data,
-	struct nova_inode_update *update, struct vma_item *item);
 int nova_append_file_write_entry(struct super_block *sb, struct nova_inode *pi,
 	struct inode *inode, struct nova_file_write_entry *data,
 	struct nova_inode_update *update);

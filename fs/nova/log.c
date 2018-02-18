@@ -53,10 +53,6 @@ static int nova_execute_invalidate_reassign_logentry(struct super_block *sb,
 		((struct nova_link_change_entry *)entry)->invalid = 1;
 		invalid = 1;
 		break;
-	case MMAP_WRITE:
-		((struct nova_mmap_entry *)entry)->invalid = 1;
-		invalid = 1;
-		break;
 	case SNAPSHOT_INFO:
 		((struct nova_snapshot_info_entry *)entry)->deleted = 1;
 		invalid = 1;
@@ -217,11 +213,6 @@ void nova_clear_last_page_tail(struct super_block *sb,
 	nova_memunlock_range(sb, nvmm_addr + offset, length);
 	memcpy_to_pmem_nocache(nvmm_addr + offset, sbi->zeroed_page, length);
 	nova_memlock_range(sb, nvmm_addr + offset, length);
-
-	if (data_csum > 0)
-		nova_update_truncated_block_csum(sb, inode, newsize);
-	if (data_parity > 0)
-		nova_update_truncated_block_parity(sb, inode, newsize);
 }
 
 static void nova_update_setattr_entry(struct inode *inode,
@@ -279,7 +270,6 @@ static int nova_update_write_entry(struct super_block *sb,
 	entry->trans_id = cpu_to_le64(entry_info->trans_id);
 	entry->mtime = cpu_to_le32(entry_info->time);
 	entry->size = cpu_to_le64(entry_info->file_size);
-	entry->updating = 0;
 	nova_update_entry_csum(entry);
 	return 0;
 }
@@ -374,10 +364,6 @@ static int nova_update_log_entry(struct super_block *sb, struct inode *inode,
 		break;
 	case LINK_CHANGE:
 		nova_update_link_change_entry(inode, entry, entry_info);
-		break;
-	case MMAP_WRITE:
-		memcpy_to_pmem_nocache(entry, entry_info->data,
-				sizeof(struct nova_mmap_entry));
 		break;
 	case SNAPSHOT_INFO:
 		memcpy_to_pmem_nocache(entry, entry_info->data,
@@ -855,18 +841,6 @@ int nova_inplace_update_write_entry(struct super_block *sb,
 					entry_info);
 }
 
-int nova_set_write_entry_updating(struct super_block *sb,
-	struct nova_file_write_entry *entry, int set)
-{
-	nova_memunlock_range(sb, entry, sizeof(*entry));
-	entry->updating = set ? 1 : 0;
-	nova_update_entry_csum(entry);
-	nova_update_alter_entry(sb, entry);
-	nova_memlock_range(sb, entry, sizeof(*entry));
-
-	return 0;
-}
-
 /*
  * Append a nova_file_write_entry to the current nova_inode_log_page.
  * blocknr and start_blk are pgoff.
@@ -899,42 +873,6 @@ int nova_append_file_write_entry(struct super_block *sb, struct nova_inode *pi,
 		nova_err(sb, "%s failed\n", __func__);
 
 	NOVA_END_TIMING(append_file_entry_t, append_time);
-	return ret;
-}
-
-int nova_append_mmap_entry(struct super_block *sb, struct nova_inode *pi,
-	struct inode *inode, struct nova_mmap_entry *data,
-	struct nova_inode_update *update, struct vma_item *item)
-{
-	struct nova_inode_info *si = NOVA_I(inode);
-	struct nova_inode_info_header *sih = &si->header;
-	struct nova_inode inode_copy;
-	struct nova_log_entry_info entry_info;
-	timing_t append_time;
-	int ret;
-
-	NOVA_START_TIMING(append_mmap_entry_t, append_time);
-
-	nova_update_entry_csum(data);
-
-	entry_info.type = MMAP_WRITE;
-	entry_info.update = update;
-	entry_info.data = data;
-	entry_info.epoch_id = data->epoch_id;
-
-	if (nova_check_inode_integrity(sb, sih->ino, sih->pi_addr,
-			sih->alter_pi_addr, &inode_copy, 0) < 0) {
-		ret = -EIO;
-		goto out;
-	}
-
-	ret = nova_append_log_entry(sb, pi, inode, sih, &entry_info);
-	if (ret)
-		nova_err(sb, "%s failed\n", __func__);
-
-	item->mmap_entry = entry_info.curr_p;
-out:
-	NOVA_END_TIMING(append_mmap_entry_t, append_time);
 	return ret;
 }
 

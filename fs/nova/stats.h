@@ -82,7 +82,6 @@ enum timing_category {
 	logging_title_t,
 	append_dir_entry_t,
 	append_file_entry_t,
-	append_mmap_entry_t,
 	append_link_change_t,
 	append_setattr_t,
 	append_snapshot_info_t,
@@ -101,15 +100,11 @@ enum timing_category {
 
 	/* Integrity */
 	integrity_title_t,
-	block_csum_t,
-	block_parity_t,
-	block_csum_parity_t,
 	protect_memcpy_t,
 	protect_file_data_t,
 	verify_entry_csum_t,
 	verify_data_csum_t,
 	calc_entry_csum_t,
-	restore_data_t,
 	reset_mapping_t,
 	reset_vma_t,
 
@@ -175,7 +170,6 @@ enum stats_category {
 	dirty_pages,
 	protect_head,
 	protect_tail,
-	block_csum_parity,
 	dax_cow_during_snapshot,
 	mapping_updated_pages,
 	cow_overlap_mmap,

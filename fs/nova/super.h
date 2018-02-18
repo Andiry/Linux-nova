@@ -35,8 +35,6 @@ struct nova_super_block {
 	/* Metadata and data protections */
 	u8		s_padding8;
 	u8		s_metadata_csum;
-	u8		s_data_csum;
-	u8		s_data_parity;
 } __attribute((__packed__));
 
 #define NOVA_SB_SIZE 512       /* must be power of two */
@@ -156,10 +154,6 @@ struct nova_sb_info {
 
 	/* ZEROED page for cache page initialized */
 	void *zeroed_page;
-
-	/* Checksum and parity for zero block */
-	u32 zero_csum[8];
-	void *zero_parity;
 
 	/* Per-CPU journal lock */
 	spinlock_t *journal_locks;

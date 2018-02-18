@@ -82,7 +82,6 @@ const char *Timingstring[TIMING_NUM] = {
 	"============= Logging operations ===============",
 	"append_dir_entry",
 	"append_file_entry",
-	"append_mmap_entry",
 	"append_link_change",
 	"append_setattr",
 	"append_snapshot_info",
@@ -101,15 +100,11 @@ const char *Timingstring[TIMING_NUM] = {
 
 	/* Integrity */
 	"============ Integrity operations ==============",
-	"block_csum",
-	"block_parity",
-	"block_csum_parity",
 	"protect_memcpy",
 	"protect_file_data",
 	"verify_entry_csum",
 	"verify_data_csum",
 	"calc_entry_csum",
-	"restore_file_data",
 	"reset_mapping",
 	"reset_vma",
 
@@ -371,11 +366,11 @@ void nova_print_inode(struct nova_inode *pi)
 static inline void nova_print_file_write_entry(struct super_block *sb,
 	u64 curr, struct nova_file_write_entry *entry)
 {
-	nova_dbg("file write entry @ 0x%llx: epoch %llu, trans %llu, pgoff %llu, pages %u, blocknr %llu, reassigned %u, updating %u, invalid count %u, size %llu, mtime %u\n",
+	nova_dbg("file write entry @ 0x%llx: epoch %llu, trans %llu, pgoff %llu, pages %u, blocknr %llu, reassigned %u, invalid count %u, size %llu, mtime %u\n",
 			curr, entry->epoch_id, entry->trans_id,
 			entry->pgoff, entry->num_pages,
 			entry->block >> PAGE_SHIFT,
-			entry->reassigned, entry->updating,
+			entry->reassigned,
 			entry->invalid_pages, entry->size, entry->mtime);
 }
 
@@ -395,14 +390,6 @@ static inline void nova_print_link_change_entry(struct super_block *sb,
 			curr, entry->epoch_id, entry->trans_id,
 			entry->invalid, entry->links,
 			entry->flags, entry->ctime);
-}
-
-static inline void nova_print_mmap_entry(struct super_block *sb,
-	u64 curr, struct nova_mmap_entry *entry)
-{
-	nova_dbg("mmap write entry @ 0x%llx: epoch %llu, invalid %u, pgoff %llu, pages %llu\n",
-			curr, entry->epoch_id, entry->invalid,
-			entry->pgoff, entry->num_pages);
 }
 
 static inline void nova_print_snapshot_info_entry(struct super_block *sb,
@@ -443,10 +430,6 @@ u64 nova_print_log_entry(struct super_block *sb, u64 curr)
 	case LINK_CHANGE:
 		nova_print_link_change_entry(sb, curr, addr);
 		curr += sizeof(struct nova_link_change_entry);
-		break;
-	case MMAP_WRITE:
-		nova_print_mmap_entry(sb, curr, addr);
-		curr += sizeof(struct nova_mmap_entry);
 		break;
 	case SNAPSHOT_INFO:
 		nova_print_snapshot_info_entry(sb, curr, addr);
@@ -664,11 +647,6 @@ void nova_print_free_lists(struct super_block *sb)
 			i, free_list->block_start, free_list->block_end,
 			free_list->block_end - free_list->block_start + 1,
 			free_list->num_free_blocks, free_list->num_blocknode);
-
-		nova_dbg("Free list %d: csum start %lu, replica csum start %lu, csum blocks %lu, parity start %lu, parity blocks %lu\n",
-			i, free_list->csum_start, free_list->replica_csum_start,
-			free_list->num_csum_blocks,
-			free_list->parity_start, free_list->num_parity_blocks);
 
 		nova_dbg("Free list %d: alloc log count %lu, allocated log pages %lu, alloc data count %lu, allocated data pages %lu, free log count %lu, freed log pages %lu, free data count %lu, freed data pages %lu\n",
 			 i,

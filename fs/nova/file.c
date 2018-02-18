@@ -119,8 +119,6 @@ static loff_t nova_llseek(struct file *file, loff_t offset, int origin)
 static int nova_fsync(struct file *file, loff_t start, loff_t end, int datasync)
 {
 	struct address_space *mapping = file->f_mapping;
-	struct inode *inode = file->f_path.dentry->d_inode;
-	struct super_block *sb = inode->i_sb;
 	unsigned long start_pgoff, end_pgoff;
 	int ret = 0;
 	timing_t fsync_time;
@@ -138,14 +136,6 @@ static int nova_fsync(struct file *file, loff_t start, loff_t end, int datasync)
 	end_pgoff = (end + 1) >> PAGE_SHIFT;
 	nova_dbgv("%s: msync pgoff range %lu to %lu\n",
 			__func__, start_pgoff, end_pgoff);
-
-	/*
-	 * Set csum and parity.
-	 * We do not protect data integrity during mmap, but we have to
-	 * update csum here since msync clears dirty bit.
-	 */
-	nova_reset_mapping_csum_parity(sb, inode, mapping,
-					start_pgoff, end_pgoff);
 
 	ret = generic_file_fsync(file, start, end, datasync);
 
@@ -288,8 +278,6 @@ static long nova_fallocate(struct file *file, int mode, loff_t offset,
 		}
 
 		entry = nova_get_block(sb, update.curr_entry);
-		nova_reset_csum_parity_range(sb, sih, entry, start_blk,
-					start_blk + allocated, 1, 0);
 
 		update_log = true;
 		if (begin_tail == 0)
@@ -382,35 +370,10 @@ static ssize_t nova_dax_read_iter(struct kiocb *iocb, struct iov_iter *to)
 	return ret;
 }
 
-static int nova_update_iter_csum_parity(struct super_block *sb,
-	struct inode *inode, loff_t offset, size_t count)
-{
-	struct nova_inode_info *si = NOVA_I(inode);
-	struct nova_inode_info_header *sih = &si->header;
-	unsigned long start_pgoff, end_pgoff;
-	loff_t end;
-
-	if (data_csum == 0 && data_parity == 0)
-		return 0;
-
-	end = offset + count;
-
-	start_pgoff = offset >> sb->s_blocksize_bits;
-	end_pgoff = end >> sb->s_blocksize_bits;
-	if (end & (nova_inode_blk_size(sih) - 1))
-		end_pgoff++;
-
-	nova_reset_csum_parity_range(sb, sih, NULL, start_pgoff,
-			end_pgoff, 0, 0);
-
-	return 0;
-}
-
 static ssize_t nova_dax_write_iter(struct kiocb *iocb, struct iov_iter *from)
 {
 	struct file *file = iocb->ki_filp;
 	struct inode *inode = file->f_mapping->host;
-	struct super_block *sb = inode->i_sb;
 	loff_t offset;
 	size_t count;
 	ssize_t ret;
@@ -438,8 +401,6 @@ static ssize_t nova_dax_write_iter(struct kiocb *iocb, struct iov_iter *from)
 		i_size_write(inode, iocb->ki_pos);
 		mark_inode_dirty(inode);
 	}
-
-	nova_update_iter_csum_parity(sb, inode, offset, count);
 
 out_unlock:
 	inode_unlock(inode);
@@ -542,19 +503,6 @@ memcpy:
 		if (nr > len - copied)
 			nr = len - copied;
 
-		if ((!zero) && (data_csum > 0)) {
-			if (nova_find_pgoff_in_vma(inode, index))
-				goto skip_verify;
-
-			if (!nova_verify_data_csum(sb, sih, nvmm, offset, nr)) {
-				nova_err(sb, "%s: nova data checksum and recovery fail! inode %lu, offset %lu, entry pgoff %lu, %u pages, pgoff %lu\n",
-					 __func__, inode->i_ino, offset,
-					 entry->pgoff, entry->num_pages, index);
-				error = -EIO;
-				goto out;
-			}
-		}
-skip_verify:
 		NOVA_START_TIMING(memcpy_r_nvmm_t, memcpy_time);
 
 		if (!zero)
@@ -741,13 +689,6 @@ static ssize_t do_nova_cow_file_write(struct file *filp,
 						buf, bytes);
 		nova_memlock_range(sb, kmem + offset, bytes);
 		NOVA_END_TIMING(memcpy_w_nvmm_t, memcpy_time);
-
-		if (data_csum > 0 || data_parity > 0) {
-			ret = nova_protect_file_data(sb, inode, pos, bytes,
-							buf, blocknr, false);
-			if (ret)
-				goto out;
-		}
 
 		if (pos + copied > inode->i_size)
 			file_size = cpu_to_le64(pos + copied);

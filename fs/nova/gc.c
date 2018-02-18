@@ -26,7 +26,6 @@ static bool curr_log_entry_invalid(struct super_block *sb,
 	struct nova_dentry *dentry;
 	struct nova_setattr_logentry *setattr_entry;
 	struct nova_link_change_entry *linkc_entry;
-	struct nova_mmap_entry *mmap_entry;
 	struct nova_snapshot_info_entry *sn_entry;
 	char entry_copy[NOVA_MAX_ENTRY_LEN];
 	void *addr, *entryc;
@@ -73,12 +72,6 @@ static bool curr_log_entry_invalid(struct super_block *sb,
 		if (sih->last_dentry == curr_p)
 			ret = false;
 		*length = le16_to_cpu(dentry->de_len);
-		break;
-	case MMAP_WRITE:
-		mmap_entry = (struct nova_mmap_entry *) entryc;
-		if (mmap_entry->invalid == 0)
-			ret = false;
-		*length = sizeof(struct nova_mmap_entry);
 		break;
 	case SNAPSHOT_INFO:
 		sn_entry = (struct nova_snapshot_info_entry *) entryc;
@@ -205,29 +198,6 @@ static int nova_gc_assign_dentry(struct super_block *sb,
 	return ret;
 }
 
-static int nova_gc_assign_mmap_entry(struct super_block *sb,
-	struct nova_inode_info_header *sih, u64 curr_p, u64 new_curr)
-{
-	struct vma_item *item;
-	struct rb_node *temp;
-	int ret = 0;
-
-	if (sih->num_vmas == 0)
-		return ret;
-
-	temp = rb_first(&sih->vma_tree);
-	while (temp) {
-		item = container_of(temp, struct vma_item, node);
-		temp = rb_next(temp);
-		if (item->mmap_entry == curr_p) {
-			item->mmap_entry = new_curr;
-			break;
-		}
-	}
-
-	return ret;
-}
-
 static int nova_gc_assign_snapshot_entry(struct super_block *sb,
 	struct nova_inode_info_header *sih,
 	struct nova_snapshot_info_entry *old_entry, u64 curr_p, u64 new_curr)
@@ -263,9 +233,6 @@ static int nova_gc_assign_new_entry(struct super_block *sb,
 		break;
 	case LINK_CHANGE:
 		sih->last_link_change = new_curr;
-		break;
-	case MMAP_WRITE:
-		ret = nova_gc_assign_mmap_entry(sb, sih, curr_p, new_curr);
 		break;
 	case SNAPSHOT_INFO:
 		ret = nova_gc_assign_snapshot_entry(sb, sih, addr,

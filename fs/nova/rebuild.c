@@ -172,187 +172,6 @@ static int nova_rebuild_inode_finish(struct super_block *sb,
 	return 0;
 }
 
-static int nova_reset_csum_parity_page(struct super_block *sb,
-	struct nova_inode_info_header *sih, struct nova_file_write_entry *entry,
-	unsigned long pgoff, int zero)
-{
-	nova_dbgv("%s: update page off %lu\n", __func__, pgoff);
-
-	if (data_csum)
-		nova_update_pgoff_csum(sb, sih, entry, pgoff, zero);
-
-	if (data_parity)
-		nova_update_pgoff_parity(sb, sih, entry, pgoff, zero);
-
-	return 0;
-}
-
-int nova_reset_csum_parity_range(struct super_block *sb,
-	struct nova_inode_info_header *sih, struct nova_file_write_entry *entry,
-	unsigned long start_pgoff, unsigned long end_pgoff, int zero,
-	int check_entry)
-{
-	struct nova_file_write_entry *curr;
-	unsigned long pgoff;
-
-	if (data_csum == 0 && data_parity == 0)
-		return 0;
-
-	for (pgoff = start_pgoff; pgoff < end_pgoff; pgoff++) {
-		if (entry && check_entry && zero == 0) {
-			curr = nova_get_write_entry(sb, sih, pgoff);
-			if (curr != entry)
-				continue;
-		}
-
-		/* FIXME: For mmap, check dirty? */
-		nova_reset_csum_parity_page(sb, sih, entry, pgoff, zero);
-	}
-
-	return 0;
-}
-
-/* Reset data csum for updating entries */
-static int nova_reset_data_csum_parity(struct super_block *sb,
-	struct nova_inode_info_header *sih, struct nova_file_write_entry *entry,
-	struct nova_file_write_entry *entryc)
-{
-	unsigned long end_pgoff;
-
-	if (data_csum == 0 && data_parity == 0)
-		goto out;
-
-	if (entryc->invalid_pages == entryc->num_pages)
-		/* Dead entry */
-		goto out;
-
-	end_pgoff = entryc->pgoff + entryc->num_pages;
-	nova_reset_csum_parity_range(sb, sih, entry, entryc->pgoff,
-			end_pgoff, 0, 1);
-
-out:
-	nova_set_write_entry_updating(sb, entry, 0);
-
-	return 0;
-}
-
-/* Reset data csum for mmap entries */
-static int nova_reset_mmap_csum_parity(struct super_block *sb,
-	struct nova_inode_info_header *sih, struct nova_mmap_entry *entry,
-	struct nova_mmap_entry *entryc)
-{
-	unsigned long end_pgoff;
-	int ret = 0;
-
-	if (data_csum == 0 && data_parity == 0)
-		return 0;
-
-	if (entryc->invalid == 1)
-		/* Dead entry */
-		return 0;
-
-	end_pgoff = entryc->pgoff + entryc->num_pages;
-	nova_reset_csum_parity_range(sb, sih, NULL, entryc->pgoff,
-			end_pgoff, 0, 0);
-
-	ret = nova_invalidate_logentry(sb, entry, MMAP_WRITE, 0);
-
-	return ret;
-}
-
-int nova_reset_mapping_csum_parity(struct super_block *sb,
-	struct inode *inode, struct address_space *mapping,
-	unsigned long start_pgoff, unsigned long end_pgoff)
-{
-	struct nova_inode_info *si = NOVA_I(inode);
-	struct nova_inode_info_header *sih = &si->header;
-	pgoff_t indices[PAGEVEC_SIZE];
-	struct pagevec pvec;
-	bool done = false;
-	int count = 0;
-	unsigned long start = 0;
-	timing_t reset_time;
-	int i;
-
-	if (data_csum == 0 && data_parity == 0)
-		return 0;
-
-	NOVA_START_TIMING(reset_mapping_t, reset_time);
-	nova_dbgv("%s: pgoff %lu to %lu\n",
-			__func__, start_pgoff, end_pgoff);
-
-	while (!done) {
-		pvec.nr = find_get_entries_tag(mapping, start_pgoff,
-				PAGECACHE_TAG_DIRTY, PAGEVEC_SIZE,
-				pvec.pages, indices);
-
-		if (pvec.nr == 0)
-			break;
-
-		if (count == 0)
-			start = indices[0];
-
-		for (i = 0; i < pvec.nr; i++) {
-			if (indices[i] >= end_pgoff) {
-				done = true;
-				break;
-			}
-
-			NOVA_STATS_ADD(dirty_pages, 1);
-			nova_reset_csum_parity_page(sb, sih, NULL,
-						indices[i], 0);
-		}
-
-		count += pvec.nr;
-		if (pvec.nr < PAGEVEC_SIZE)
-			break;
-
-		start_pgoff = indices[pvec.nr - 1] + 1;
-	}
-
-	if (count)
-		nova_dbgv("%s: inode %lu, reset %d pages, start pgoff %lu\n",
-				__func__, sih->ino, count, start);
-
-	NOVA_END_TIMING(reset_mapping_t, reset_time);
-	return 0;
-}
-
-int nova_reset_vma_csum_parity(struct super_block *sb,
-	struct vma_item *item)
-{
-	struct vm_area_struct *vma = item->vma;
-	struct address_space *mapping = vma->vm_file->f_mapping;
-	struct inode *inode = mapping->host;
-	struct nova_mmap_entry *entry;
-	unsigned long num_pages;
-	unsigned long start_index, end_index;
-	timing_t reset_time;
-	int ret = 0;
-
-	if (data_csum == 0 && data_parity == 0)
-		return 0;
-
-	NOVA_START_TIMING(reset_vma_t, reset_time);
-	num_pages = (vma->vm_end - vma->vm_start) >> PAGE_SHIFT;
-	start_index = vma->vm_pgoff;
-	end_index = vma->vm_pgoff + num_pages;
-
-	nova_dbgv("%s: inode %lu, pgoff %lu - %lu\n",
-			__func__, inode->i_ino, start_index, end_index);
-
-	ret = nova_reset_mapping_csum_parity(sb, inode, mapping,
-					start_index, end_index);
-
-	if (item->mmap_entry) {
-		entry = nova_get_block(sb, item->mmap_entry);
-		ret = nova_invalidate_logentry(sb, entry, MMAP_WRITE, 0);
-	}
-
-	NOVA_END_TIMING(reset_vma_t, reset_time);
-	return ret;
-}
-
 static void nova_rebuild_handle_write_entry(struct super_block *sb,
 	struct nova_inode_info_header *sih, struct nova_inode_rebuild *reb,
 	struct nova_file_write_entry *entry,
@@ -373,9 +192,6 @@ static void nova_rebuild_handle_write_entry(struct super_block *sb,
 		reb->trans_id = entryc->trans_id;
 	}
 
-	if (entryc->updating)
-		nova_reset_data_csum_parity(sb, sih, entry, entryc);
-
 	/* Update sih->i_size for setattr apply operations */
 	sih->i_size = le64_to_cpu(reb->i_size);
 }
@@ -388,7 +204,6 @@ static int nova_rebuild_file_inode_tree(struct super_block *sb,
 	struct nova_file_write_entry *entry = NULL;
 	struct nova_setattr_logentry *attr_entry = NULL;
 	struct nova_link_change_entry *link_change_entry = NULL;
-	struct nova_mmap_entry *mmap_entry = NULL;
 	char entry_copy[NOVA_MAX_ENTRY_LEN];
 	struct nova_inode_rebuild rebuild, *reb;
 	unsigned int data_bits = blk_type_to_shift[sih->i_blk_type];
@@ -470,12 +285,6 @@ static int nova_rebuild_file_inode_tree(struct super_block *sb,
 			nova_rebuild_handle_write_entry(sb, sih, reb,
 					entry, WENTRY(entryc));
 			curr_p += sizeof(struct nova_file_write_entry);
-			break;
-		case MMAP_WRITE:
-			mmap_entry = (struct nova_mmap_entry *)addr;
-			nova_reset_mmap_csum_parity(sb, sih,
-					mmap_entry, MMENTRY(entryc));
-			curr_p += sizeof(struct nova_mmap_entry);
 			break;
 		default:
 			nova_err(sb, "unknown type %d, 0x%llx\n", type, curr_p);
