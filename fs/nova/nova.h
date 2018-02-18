@@ -141,7 +141,6 @@ extern unsigned int nova_dbgmask;
 
 extern int measure_timing;
 extern int inplace_data_updates;
-extern int dram_struct_csum;
 
 extern unsigned int blk_type_to_shift[NOVA_BLOCK_TYPE_MAX];
 extern unsigned int blk_type_to_size[NOVA_BLOCK_TYPE_MAX];
@@ -390,7 +389,6 @@ struct nova_range_node {
 	struct vm_area_struct *vma;
 	unsigned long range_low;
 	unsigned long range_high;
-	u32	csum;		/* Protect vma, range low/high */
 };
 
 struct vma_item {
@@ -398,42 +396,6 @@ struct vma_item {
 	struct rb_node node;
 	struct vm_area_struct *vma;
 };
-
-static inline u32 nova_calculate_range_node_csum(struct nova_range_node *node)
-{
-	u32 crc;
-
-	crc = nova_crc32c(~0, (__u8 *)&node->vma,
-			(unsigned long)&node->csum - (unsigned long)&node->vma);
-
-	return crc;
-}
-
-static inline int nova_update_range_node_checksum(struct nova_range_node *node)
-{
-	if (dram_struct_csum)
-		node->csum = nova_calculate_range_node_csum(node);
-
-	return 0;
-}
-
-static inline bool nova_range_node_checksum_ok(struct nova_range_node *node)
-{
-	bool ret;
-
-	if (dram_struct_csum == 0)
-		return true;
-
-	ret = node->csum == nova_calculate_range_node_csum(node);
-	if (!ret) {
-		nova_dbg("%s: checksum failure, vma %p, range low %lu, range high %lu, csum 0x%x\n",
-			 __func__, node->vma, node->range_low, node->range_high,
-			 node->csum);
-	}
-
-	return ret;
-}
-
 
 enum bm_type {
 	BM_4K = 0,

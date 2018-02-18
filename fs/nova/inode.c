@@ -53,7 +53,6 @@ int nova_init_inode_inuse_list(struct super_block *sb)
 
 		range_node->range_low = 0;
 		range_node->range_high = range_high;
-		nova_update_range_node_checksum(range_node);
 		ret = nova_insert_inodetree(sbi, range_node, i);
 		if (ret) {
 			nova_err(sb, "%s failed\n", __func__);
@@ -539,10 +538,6 @@ static int nova_alloc_unused_inode(struct super_block *sb, int cpuid,
 	inode_map = &sbi->inode_maps[cpuid];
 	i = inode_map->first_inode_range;
 	NOVA_ASSERT(i);
-	if (!nova_range_node_checksum_ok(i)) {
-		nova_dbg("%s: first node failed\n", __func__);
-		return -EIO;
-	}
 
 	temp = &i->node;
 	next = rb_next(temp);
@@ -552,10 +547,6 @@ static int nova_alloc_unused_inode(struct super_block *sb, int cpuid,
 		next_range_low = MAX_INODE;
 	} else {
 		next_i = container_of(next, struct nova_range_node, node);
-		if (!nova_range_node_checksum_ok(next_i)) {
-			nova_dbg("%s: second node failed\n", __func__);
-			return -EIO;
-		}
 		next_range_low = next_i->range_low;
 	}
 
@@ -564,14 +555,12 @@ static int nova_alloc_unused_inode(struct super_block *sb, int cpuid,
 	if (next_i && new_ino == (next_range_low - 1)) {
 		/* Fill the gap completely */
 		i->range_high = next_i->range_high;
-		nova_update_range_node_checksum(i);
 		rb_erase(&next_i->node, &inode_map->inode_inuse_tree);
 		nova_free_inode_node(sb, next_i);
 		inode_map->num_range_node_inode--;
 	} else if (new_ino < (next_range_low - 1)) {
 		/* Aligns to left */
 		i->range_high = new_ino;
-		nova_update_range_node_checksum(i);
 	} else {
 		nova_dbg("%s: ERROR: new ino %lu, next low %lu\n", __func__,
 			new_ino, next_range_low);
@@ -618,13 +607,11 @@ static int nova_free_inuse_inode(struct super_block *sb, unsigned long ino)
 	if ((internal_ino == i->range_low) && (internal_ino < i->range_high)) {
 		/* Aligns left */
 		i->range_low = internal_ino + 1;
-		nova_update_range_node_checksum(i);
 		goto block_found;
 	}
 	if ((internal_ino > i->range_low) && (internal_ino == i->range_high)) {
 		/* Aligns right */
 		i->range_high = internal_ino - 1;
-		nova_update_range_node_checksum(i);
 		goto block_found;
 	}
 	if ((internal_ino > i->range_low) && (internal_ino < i->range_high)) {
@@ -637,10 +624,8 @@ static int nova_free_inuse_inode(struct super_block *sb, unsigned long ino)
 		}
 		curr_node->range_low = internal_ino + 1;
 		curr_node->range_high = i->range_high;
-		nova_update_range_node_checksum(curr_node);
 
 		i->range_high = internal_ino - 1;
-		nova_update_range_node_checksum(i);
 
 		ret = nova_insert_inodetree(sbi, curr_node, cpuid);
 		if (ret) {

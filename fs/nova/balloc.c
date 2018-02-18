@@ -116,7 +116,6 @@ void nova_init_blockmap(struct super_block *sb, int recovery)
 				BUG();
 			blknode->range_low = free_list->block_start;
 			blknode->range_high = free_list->block_end;
-			nova_update_range_node_checksum(blknode);
 			ret = nova_insert_blocktree(sbi, tree, blknode);
 			if (ret) {
 				nova_err(sb, "%s failed\n", __func__);
@@ -170,11 +169,6 @@ int nova_find_range_node(struct nova_sb_info *sbi,
 			ret = 1;
 			break;
 		}
-	}
-
-	if (curr && !nova_range_node_checksum_ok(curr)) {
-		nova_dbg("%s: curr failed\n", __func__);
-		return 0;
 	}
 
 	*ret_node = curr;
@@ -275,16 +269,6 @@ int nova_find_free_slot(struct nova_sb_info *sbi,
 		return -EINVAL;
 	}
 
-	if (check_prev && !nova_range_node_checksum_ok(*prev)) {
-		nova_dbg("%s: prev failed\n", __func__);
-		return -EIO;
-	}
-
-	if (check_next && !nova_range_node_checksum_ok(*next)) {
-		nova_dbg("%s: next failed\n", __func__);
-		return -EIO;
-	}
-
 	return 0;
 }
 
@@ -357,7 +341,6 @@ static int nova_free_blocks(struct super_block *sb, unsigned long blocknr,
 		rb_erase(&next->node, tree);
 		free_list->num_blocknode--;
 		prev->range_high = next->range_high;
-		nova_update_range_node_checksum(prev);
 		if (free_list->last_node == next)
 			free_list->last_node = prev;
 		nova_free_blocknode(sb, next);
@@ -366,20 +349,17 @@ static int nova_free_blocks(struct super_block *sb, unsigned long blocknr,
 	if (prev && (block_low == prev->range_high + 1)) {
 		/* Aligns left */
 		prev->range_high += num_blocks;
-		nova_update_range_node_checksum(prev);
 		goto block_found;
 	}
 	if (next && (block_high + 1 == next->range_low)) {
 		/* Aligns right */
 		next->range_low -= num_blocks;
-		nova_update_range_node_checksum(next);
 		goto block_found;
 	}
 
 	/* Aligns somewhere in the middle */
 	curr_node->range_low = block_low;
 	curr_node->range_high = block_high;
-	nova_update_range_node_checksum(curr_node);
 	new_node_used = 1;
 	ret = nova_insert_blocktree(sbi, tree, curr_node);
 	if (ret) {
@@ -521,11 +501,6 @@ static long nova_alloc_blocks_in_free_list(struct super_block *sb,
 		step++;
 		curr = container_of(temp, struct nova_range_node, node);
 
-		if (!nova_range_node_checksum_ok(curr)) {
-			nova_err(sb, "%s curr failed\n", __func__);
-			goto next;
-		}
-
 		curr_blocks = curr->range_high - curr->range_low + 1;
 
 		if (num_blocks >= curr_blocks) {
@@ -568,7 +543,6 @@ static long nova_alloc_blocks_in_free_list(struct super_block *sb,
 			curr->range_high -= num_blocks;
 		}
 
-		nova_update_range_node_checksum(curr);
 		found = 1;
 		break;
 next:
