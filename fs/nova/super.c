@@ -43,7 +43,6 @@
 #include "inode.h"
 
 int measure_timing;
-int dram_struct_csum;
 int support_clwb;
 int inplace_data_updates;
 
@@ -52,9 +51,6 @@ MODULE_PARM_DESC(measure_timing, "Timing measurement");
 
 module_param(inplace_data_updates, int, 0444);
 MODULE_PARM_DESC(inplace_data_updates, "Perform data updates in-place (i.e., not atomically)");
-
-module_param(dram_struct_csum, int, 0444);
-MODULE_PARM_DESC(dram_struct_csum, "Protect key DRAM data structures with checksums");
 
 module_param(nova_dbgmask, int, 0444);
 MODULE_PARM_DESC(nova_dbgmask, "Control debugging output");
@@ -552,8 +548,8 @@ static int nova_fill_super(struct super_block *sb, void *data, int silent)
 	}
 
 
-	nova_dbg("measure timing %d, inplace update %d, DRAM checksum %d\n",
-		measure_timing, inplace_data_updates, dram_struct_csum);
+	nova_dbg("measure timing %d, inplace update %d\n",
+		measure_timing, inplace_data_updates);
 
 	get_random_bytes(&random, sizeof(u32));
 	atomic_set(&sbi->next_generation, random);
