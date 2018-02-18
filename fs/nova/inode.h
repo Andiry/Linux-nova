@@ -48,9 +48,6 @@ struct nova_inode {
 	__le64	log_tail;	 /* Log tail pointer */
 
 	/* last 40 bytes */
-	__le64	alter_log_head;	 /* Alternate log head pointer */
-	__le64	alter_log_tail;	 /* Alternate log tail pointer */
-
 	__le64	create_epoch_id; /* Transaction ID when create */
 	__le64	delete_epoch_id; /* Transaction ID when deleted */
 
@@ -90,7 +87,6 @@ struct nova_inode_info_header {
 	unsigned long i_blocks;
 	unsigned long ino;
 	unsigned long pi_addr;
-	unsigned long alter_pi_addr;
 	unsigned long valid_entries;	/* For thorough GC */
 	unsigned long num_entries;	/* For thorough GC */
 	u64 last_setattr;		/* Last setattr entry */
@@ -99,8 +95,6 @@ struct nova_inode_info_header {
 	u64 trans_id;			/* Transaction ID */
 	u64 log_head;			/* Log head pointer */
 	u64 log_tail;			/* Log tail pointer */
-	u64 alter_log_head;		/* Alternate log head pointer */
-	u64 alter_log_tail;		/* Alternate log tail pointer */
 	u8  i_blk_type;
 };
 
@@ -133,75 +127,6 @@ static inline struct nova_inode_info *NOVA_I(struct inode *inode)
 	return container_of(inode, struct nova_inode_info, vfs_inode);
 }
 
-static inline struct nova_inode *nova_get_alter_inode(struct super_block *sb,
-	struct inode *inode)
-{
-	struct nova_inode_info *si = NOVA_I(inode);
-	struct nova_inode_info_header *sih = &si->header;
-	struct nova_inode fake_pi;
-	void *addr;
-	int rc;
-
-	if (metadata_csum == 0)
-		return NULL;
-
-	addr = nova_get_block(sb, sih->alter_pi_addr);
-	rc = memcpy_mcsafe(&fake_pi, addr, sizeof(struct nova_inode));
-	if (rc)
-		return NULL;
-
-	return (struct nova_inode *)addr;
-}
-
-static inline int nova_update_alter_inode(struct super_block *sb,
-	struct inode *inode, struct nova_inode *pi)
-{
-	struct nova_inode *alter_pi;
-
-	if (metadata_csum == 0)
-		return 0;
-
-	alter_pi = nova_get_alter_inode(sb, inode);
-	if (!alter_pi)
-		return -EINVAL;
-
-	memcpy_to_pmem_nocache(alter_pi, pi, sizeof(struct nova_inode));
-	return 0;
-}
-
-
-static inline int nova_update_inode_checksum(struct nova_inode *pi)
-{
-	u32 crc = 0;
-
-	if (metadata_csum == 0)
-		return 0;
-
-	crc = nova_crc32c(~0, (__u8 *)pi,
-			(sizeof(struct nova_inode) - sizeof(__le32)));
-
-	pi->csum = crc;
-	nova_flush_buffer(pi, sizeof(struct nova_inode), 1);
-	return 0;
-}
-
-static inline int nova_check_inode_checksum(struct nova_inode *pi)
-{
-	u32 crc = 0;
-
-	if (metadata_csum == 0)
-		return 0;
-
-	crc = nova_crc32c(~0, (__u8 *)pi,
-			(sizeof(struct nova_inode) - sizeof(__le32)));
-
-	if (pi->csum == cpu_to_le32(crc))
-		return 0;
-	else
-		return 1;
-}
-
-
 
 static inline void nova_update_tail(struct nova_inode *pi, u64 new_tail)
 {
@@ -216,47 +141,22 @@ static inline void nova_update_tail(struct nova_inode *pi, u64 new_tail)
 	NOVA_END_TIMING(update_tail_t, update_time);
 }
 
-static inline void nova_update_alter_tail(struct nova_inode *pi, u64 new_tail)
-{
-	timing_t update_time;
-
-	if (metadata_csum == 0)
-		return;
-
-	NOVA_START_TIMING(update_tail_t, update_time);
-
-	PERSISTENT_BARRIER();
-	pi->alter_log_tail = new_tail;
-	nova_flush_buffer(&pi->alter_log_tail, CACHELINE_SIZE, 1);
-
-	NOVA_END_TIMING(update_tail_t, update_time);
-}
-
-
 
 /* Update inode tails and checksums */
 static inline void nova_update_inode(struct super_block *sb,
 	struct inode *inode, struct nova_inode *pi,
-	struct nova_inode_update *update, int update_alter)
+	struct nova_inode_update *update)
 {
 	struct nova_inode_info *si = NOVA_I(inode);
 	struct nova_inode_info_header *sih = &si->header;
 
 	sih->log_tail = update->tail;
-	sih->alter_log_tail = update->alter_tail;
 	nova_update_tail(pi, update->tail);
-	if (metadata_csum)
-		nova_update_alter_tail(pi, update->alter_tail);
-
-	nova_update_inode_checksum(pi);
-	if (inode && update_alter)
-		nova_update_alter_inode(sb, inode, pi);
 }
 
 
 static inline
-struct inode_table *nova_get_inode_table(struct super_block *sb,
-	int version, int cpu)
+struct inode_table *nova_get_inode_table(struct super_block *sb, int cpu)
 {
 	struct nova_sb_info *sbi = NOVA_SB(sb);
 	int table_start;
@@ -264,10 +164,7 @@ struct inode_table *nova_get_inode_table(struct super_block *sb,
 	if (cpu >= sbi->cpus)
 		return NULL;
 
-	if ((version & 0x1) == 0)
-		table_start = INODE_TABLE0_START;
-	else
-		table_start = INODE_TABLE1_START;
+	table_start = INODE_TABLE0_START;
 
 	return (struct inode_table *)((char *)nova_get_block(sb,
 		NOVA_DEF_BLOCK_SIZE_4K * table_start) +
@@ -353,19 +250,21 @@ static inline struct nova_inode *nova_get_inode(struct super_block *sb,
 	return (struct nova_inode *)addr;
 }
 
-
+static inline int nova_persist_inode(struct nova_inode *pi)
+{
+	nova_flush_buffer(pi, sizeof(struct nova_inode), 1);
+	return 0;
+}
 
 extern const struct address_space_operations nova_aops_dax;
 int nova_init_inode_inuse_list(struct super_block *sb);
 extern int nova_init_inode_table(struct super_block *sb);
-int nova_get_alter_inode_address(struct super_block *sb, u64 ino,
-	u64 *alter_pi_addr);
 unsigned long nova_get_last_blocknr(struct super_block *sb,
 	struct nova_inode_info_header *sih);
-int nova_get_inode_address(struct super_block *sb, u64 ino, int version,
-	u64 *pi_addr, int extendable, int extend_alternate);
 int nova_set_blocksize_hint(struct super_block *sb, struct inode *inode,
 	struct nova_inode *pi, loff_t new_size);
+int nova_get_inode_address(struct super_block *sb, u64 ino,
+	u64 *pi_addr, int extendable);
 extern struct inode *nova_iget(struct super_block *sb, unsigned long ino);
 extern void nova_evict_inode(struct inode *inode);
 extern int nova_write_inode(struct inode *inode, struct writeback_control *wbc);

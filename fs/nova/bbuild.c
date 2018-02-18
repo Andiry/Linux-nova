@@ -42,7 +42,6 @@ void nova_init_header(struct super_block *sb,
 	sih->ino = 0;
 	sih->i_blocks = 0;
 	sih->pi_addr = 0;
-	sih->alter_pi_addr = 0;
 	INIT_RADIX_TREE(&sih->tree, GFP_ATOMIC);
 	sih->vma_tree = RB_ROOT;
 	sih->num_vmas = 0;
@@ -56,8 +55,6 @@ void nova_init_header(struct super_block *sb,
 	sih->trans_id = 0;
 	sih->log_head = 0;
 	sih->log_tail = 0;
-	sih->alter_log_head = 0;
-	sih->alter_log_tail = 0;
 	sih->i_blk_type = NOVA_DEFAULT_BLOCK_TYPE;
 }
 
@@ -479,7 +476,6 @@ void nova_save_inode_list_to_log(struct super_block *sb)
 				&inode_map->inode_inuse_tree, temp_tail, i);
 	}
 
-	pi->alter_log_head = pi->alter_log_tail = 0;
 	pi->log_head = new_block;
 	nova_update_tail(pi, temp_tail);
 	nova_flush_buffer(&pi->log_head, CACHELINE_SIZE, 0);
@@ -528,7 +524,6 @@ void nova_save_blocknode_mappings_to_log(struct super_block *sb)
 		temp_tail = nova_save_free_list_blocknodes(sb, i, temp_tail);
 
 	/* Finally update log head and tail */
-	pi->alter_log_head = pi->alter_log_tail = 0;
 	pi->log_head = new_block;
 	nova_update_tail(pi, temp_tail);
 	nova_flush_buffer(&pi->log_head, CACHELINE_SIZE, 0);
@@ -770,7 +765,6 @@ static int alloc_bm(struct super_block *sb, unsigned long initsize)
 
 struct task_ring {
 	u64 addr0[512];
-	u64 addr1[512];		/* Second inode address */
 	int num;
 	int inodes_used_count;
 	u64 *entry_array;
@@ -811,13 +805,11 @@ static void nova_traverse_dir_inode_log(struct super_block *sb,
 	struct nova_inode *pi, struct scan_bitmap *bm)
 {
 	nova_traverse_inode_log(sb, pi, bm, pi->log_head);
-	if (metadata_csum)
-		nova_traverse_inode_log(sb, pi, bm, pi->alter_log_head);
 }
 
 static int nova_set_ring_array(struct super_block *sb,
 	struct nova_inode_info_header *sih, struct nova_file_write_entry *entry,
-	struct nova_file_write_entry *entryc, struct task_ring *ring,
+	struct task_ring *ring,
 	unsigned long base, struct scan_bitmap *bm)
 {
 	unsigned long start, end;
@@ -826,11 +818,11 @@ static int nova_set_ring_array(struct super_block *sb,
 	unsigned int num_free = 0;
 	u64 old_entry = 0;
 
-	start = entryc->pgoff;
+	start = entry->pgoff;
 	if (start < base)
 		start = base;
 
-	end = entryc->pgoff + entryc->num_pages;
+	end = entry->pgoff + entry->num_pages;
 	if (end > base + MAX_PGOFF)
 		end = base + MAX_PGOFF;
 
@@ -850,8 +842,8 @@ static int nova_set_ring_array(struct super_block *sb,
 	for (pgoff = start; pgoff < end; pgoff++) {
 		index = pgoff - base;
 		ring->entry_array[index] = (u64)entry;
-		ring->nvmm_array[index] = (u64)(entryc->block >> PAGE_SHIFT)
-						+ pgoff - entryc->pgoff;
+		ring->nvmm_array[index] = (u64)(entry->block >> PAGE_SHIFT)
+						+ pgoff - entry->pgoff;
 	}
 
 	return 0;
@@ -940,15 +932,15 @@ out:
 
 static void nova_traverse_file_write_entry(struct super_block *sb,
 	struct nova_inode_info_header *sih, struct nova_file_write_entry *entry,
-	struct nova_file_write_entry *entryc, struct task_ring *ring,
+	struct task_ring *ring,
 	unsigned long base, struct scan_bitmap *bm)
 {
-	sih->i_size = entryc->size;
+	sih->i_size = entry->size;
 
-	if (entryc->num_pages != entryc->invalid_pages) {
-		if (entryc->pgoff < base + MAX_PGOFF &&
-				entryc->pgoff + entryc->num_pages > base)
-			nova_set_ring_array(sb, sih, entry, entryc,
+	if (entry->num_pages != entry->invalid_pages) {
+		if (entry->pgoff < base + MAX_PGOFF &&
+				entry->pgoff + entry->num_pages > base)
+			nova_set_ring_array(sb, sih, entry,
 						ring, base, bm);
 	}
 }
@@ -957,11 +949,10 @@ static int nova_traverse_file_inode_log(struct super_block *sb,
 	struct nova_inode *pi, struct nova_inode_info_header *sih,
 	struct task_ring *ring, struct scan_bitmap *bm)
 {
-	char entry_copy[NOVA_MAX_ENTRY_LEN];
 	unsigned long base = 0;
 	unsigned long last_blocknr;
 	u64 ino = pi->nova_ino;
-	void *entry, *entryc;
+	void *entry;
 	unsigned int btype;
 	unsigned int data_bits;
 	u64 curr_p;
@@ -970,11 +961,6 @@ static int nova_traverse_file_inode_log(struct super_block *sb,
 
 	btype = pi->i_blk_type;
 	data_bits = blk_type_to_shift[btype];
-
-	if (metadata_csum)
-		nova_traverse_inode_log(sb, pi, bm, pi->alter_log_head);
-
-	entryc = (metadata_csum == 0) ? NULL : entry_copy;
 
 again:
 	sih->i_size = 0;
@@ -1005,15 +991,10 @@ again:
 
 		entry = (void *)nova_get_block(sb, curr_p);
 
-		if (metadata_csum == 0)
-			entryc = entry;
-		else if (!nova_verify_entry_csum(sb, entry, entryc))
-			return 0;
-
-		type = nova_get_entry_type(entryc);
+		type = nova_get_entry_type(entry);
 		switch (type) {
 		case SET_ATTR:
-			nova_ring_setattr_entry(sb, sih, SENTRY(entryc),
+			nova_ring_setattr_entry(sb, sih, SENTRY(entry),
 						ring, base, data_bits,
 						bm);
 			curr_p += sizeof(struct nova_setattr_logentry);
@@ -1023,7 +1004,7 @@ again:
 			break;
 		case FILE_WRITE:
 			nova_traverse_file_write_entry(sb, sih, WENTRY(entry),
-						WENTRY(entryc), ring, base, bm);
+						ring, base, bm);
 			curr_p += sizeof(struct nova_file_write_entry);
 			break;
 		default:
@@ -1208,7 +1189,7 @@ static int failure_thread_func(void *data)
 	unsigned long ino_low, ino_high;
 	unsigned long last_blocknr;
 	unsigned int data_bits;
-	u64 curr, curr1;
+	u64 curr;
 	int cpuid = smp_processor_id();
 	unsigned long i;
 	unsigned long max_size = 0;
@@ -1225,7 +1206,6 @@ static int failure_thread_func(void *data)
 
 	for (count = 0; count < ring->num; count++) {
 		curr = ring->addr0[count];
-		curr1 = ring->addr1[count];
 		ino_low = ino_high = 0;
 
 		/*
@@ -1235,12 +1215,6 @@ static int failure_thread_func(void *data)
 		for (i = 0; i < 512; i++)
 			set_bm((curr >> PAGE_SHIFT) + i,
 					global_bm[cpuid], BM_4K);
-
-		if (metadata_csum) {
-			for (i = 0; i < 512; i++)
-				set_bm((curr1 >> PAGE_SHIFT) + i,
-					global_bm[cpuid], BM_4K);
-		}
 
 		for (i = 0; i < num_inodes_per_page; i++) {
 			pi_addr = curr + i * NOVA_INODE_SIZE;
@@ -1296,52 +1270,40 @@ static int nova_failure_recovery_crawl(struct super_block *sb)
 	unsigned long curr_addr;
 	u64 root_addr;
 	u64 curr;
-	int num_tables;
-	int version;
 	int ret = 0;
 	int count;
 	int cpuid;
 
 	root_addr = nova_get_reserved_inode_addr(sb, NOVA_ROOT_INO);
 
-	num_tables = 1;
-	if (metadata_csum)
-		num_tables = 2;
-
 	for (cpuid = 0; cpuid < sbi->cpus; cpuid++) {
 		ring = &task_rings[cpuid];
-		for (version = 0; version < num_tables; version++) {
-			inode_table = nova_get_inode_table(sb, version,
-								cpuid);
-			if (!inode_table)
+		inode_table = nova_get_inode_table(sb, cpuid);
+		if (!inode_table)
+			return -EINVAL;
+
+		count = 0;
+		curr = inode_table->log_head;
+		while (curr) {
+			if (ring->num >= 512) {
+				nova_err(sb, "%s: ring size too small\n",
+					 __func__);
 				return -EINVAL;
-
-			count = 0;
-			curr = inode_table->log_head;
-			while (curr) {
-				if (ring->num >= 512) {
-					nova_err(sb, "%s: ring size too small\n",
-						 __func__);
-					return -EINVAL;
-				}
-
-				if (version == 0)
-					ring->addr0[count] = curr;
-				else
-					ring->addr1[count] = curr;
-
-				count++;
-
-				curr_addr = (unsigned long)nova_get_block(sb,
-								curr);
-				/* Next page resides at the last 8 bytes */
-				curr_addr += 2097152 - 8;
-				curr = *(u64 *)(curr_addr);
 			}
 
-			if (count > ring->num)
-				ring->num = count;
+			ring->addr0[count] = curr;
+
+			count++;
+
+			curr_addr = (unsigned long)nova_get_block(sb,
+							curr);
+			/* Next page resides at the last 8 bytes */
+			curr_addr += 2097152 - 8;
+			curr = *(u64 *)(curr_addr);
 		}
+
+		if (count > ring->num)
+			ring->num = count;
 	}
 
 	for (cpuid = 0; cpuid < sbi->cpus; cpuid++)

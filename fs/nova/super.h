@@ -31,10 +31,6 @@ struct nova_super_block {
 	 */
 	__le32		s_mtime;		/* mount time */
 	__le32		s_wtime;		/* write time */
-
-	/* Metadata and data protections */
-	u8		s_padding8;
-	u8		s_metadata_csum;
 } __attribute((__packed__));
 
 #define NOVA_SB_SIZE 512       /* must be power of two */

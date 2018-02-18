@@ -43,16 +43,12 @@
 #include "inode.h"
 
 int measure_timing;
-int metadata_csum;
 int dram_struct_csum;
 int support_clwb;
 int inplace_data_updates;
 
 module_param(measure_timing, int, 0444);
 MODULE_PARM_DESC(measure_timing, "Timing measurement");
-
-module_param(metadata_csum, int, 0444);
-MODULE_PARM_DESC(metadata_csum, "Protect metadata structures with replication and checksums");
 
 module_param(inplace_data_updates, int, 0444);
 MODULE_PARM_DESC(inplace_data_updates, "Perform data updates in-place (i.e., not atomically)");
@@ -406,7 +402,6 @@ static struct nova_inode *nova_init(struct super_block *sb,
 	sbi->nova_sb->s_blocksize = cpu_to_le32(blocksize);
 	sbi->nova_sb->s_magic = cpu_to_le32(NOVA_SUPER_MAGIC);
 	sbi->nova_sb->s_epoch_id = 0;
-	sbi->nova_sb->s_metadata_csum = metadata_csum;
 	nova_update_super_crc(sb);
 
 	nova_sync_super(sb);
@@ -477,21 +472,6 @@ static int nova_check_super(struct super_block *sb,
 	return 0;
 }
 
-/* Check if we disable protection previously and enable it now */
-/* FIXME */
-static int nova_check_module_params(struct super_block *sb)
-{
-	struct nova_sb_info *sbi = NOVA_SB(sb);
-
-	if (sbi->nova_sb->s_metadata_csum != metadata_csum) {
-		nova_dbg("%s metadata checksum\n",
-			sbi->nova_sb->s_metadata_csum ? "Enable" : "Disable");
-		metadata_csum = sbi->nova_sb->s_metadata_csum;
-	}
-
-	return 0;
-}
-
 static int nova_check_integrity(struct super_block *sb)
 {
 	struct nova_super_block *super = nova_get_super(sb);
@@ -514,7 +494,6 @@ static int nova_check_integrity(struct super_block *sb)
 
 	nova_sync_super(sb);
 
-	nova_check_module_params(sb);
 	return 0;
 }
 
@@ -573,9 +552,8 @@ static int nova_fill_super(struct super_block *sb, void *data, int silent)
 	}
 
 
-	nova_dbg("measure timing %d, metadata checksum %d, inplace update %d, DRAM checksum %d\n",
-		measure_timing, metadata_csum,
-		inplace_data_updates, dram_struct_csum);
+	nova_dbg("measure timing %d, inplace update %d, DRAM checksum %d\n",
+		measure_timing, inplace_data_updates, dram_struct_csum);
 
 	get_random_bytes(&random, sizeof(u32));
 	atomic_set(&sbi->next_generation, random);

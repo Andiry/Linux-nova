@@ -140,8 +140,6 @@ extern unsigned int nova_dbgmask;
 #define	DEAD_ZONE_BLOCKS		(256)
 
 extern int measure_timing;
-extern int metadata_csum;
-extern int unsafe_metadata;
 extern int inplace_data_updates;
 extern int dram_struct_csum;
 
@@ -375,8 +373,6 @@ static inline int nova_get_head_tail(struct super_block *sb,
 	sih->i_blk_type = fake_pi.i_blk_type;
 	sih->log_head = fake_pi.log_head;
 	sih->log_tail = fake_pi.log_tail;
-	sih->alter_log_head = fake_pi.alter_log_head;
-	sih->alter_log_tail = fake_pi.alter_log_tail;
 
 	return rc;
 }
@@ -537,8 +533,6 @@ static inline unsigned long get_nvmm(struct super_block *sb,
 		- entry->pgoff;
 }
 
-bool nova_verify_entry_csum(struct super_block *sb, void *entry, void *entryc);
-
 static inline u64 nova_find_nvmm_block(struct super_block *sb,
 	struct nova_inode_info_header *sih, struct nova_file_write_entry *entry,
 	unsigned long blocknr)
@@ -604,59 +598,6 @@ static inline u64 next_log_page(struct super_block *sb, u64 curr)
 		return rc;
 
 	return next;
-}
-
-static inline u64 alter_log_page(struct super_block *sb, u64 curr)
-{
-	struct nova_inode_log_page *curr_page;
-	u64 next = 0;
-	int rc;
-
-	if (metadata_csum == 0)
-		return 0;
-
-	curr = BLOCK_OFF(curr);
-	curr_page = (struct nova_inode_log_page *)nova_get_block(sb, curr);
-	rc = memcpy_mcsafe(&next, &curr_page->page_tail.alter_page,
-				sizeof(u64));
-	if (rc)
-		return rc;
-
-	return next;
-}
-
-#if 0
-static inline u64 next_log_page(struct super_block *sb, u64 curr_p)
-{
-	void *curr_addr = nova_get_block(sb, curr_p);
-	unsigned long page_tail = BLOCK_OFF((unsigned long)curr_addr)
-					+ LOG_BLOCK_TAIL;
-	return ((struct nova_inode_page_tail *)page_tail)->next_page;
-}
-
-static inline u64 alter_log_page(struct super_block *sb, u64 curr_p)
-{
-	void *curr_addr = nova_get_block(sb, curr_p);
-	unsigned long page_tail = BLOCK_OFF((unsigned long)curr_addr)
-					+ LOG_BLOCK_TAIL;
-	if (metadata_csum == 0)
-		return 0;
-
-	return ((struct nova_inode_page_tail *)page_tail)->alter_page;
-}
-#endif
-
-static inline u64 alter_log_entry(struct super_block *sb, u64 curr_p)
-{
-	u64 alter_page;
-	void *curr_addr = nova_get_block(sb, curr_p);
-	unsigned long page_tail = BLOCK_OFF((unsigned long)curr_addr)
-					+ LOG_BLOCK_TAIL;
-	if (metadata_csum == 0)
-		return 0;
-
-	alter_page = ((struct nova_inode_page_tail *)page_tail)->alter_page;
-	return alter_page + ENTRY_LOC(curr_p);
 }
 
 static inline void nova_set_next_page_flag(struct super_block *sb, u64 curr_p)
@@ -737,27 +678,6 @@ static inline void nova_inc_page_invalid_entries(struct super_block *sb,
 				sizeof(struct nova_inode_page_tail), 0);
 }
 
-static inline void nova_set_alter_page_address(struct super_block *sb,
-	u64 curr, u64 alter_curr)
-{
-	struct nova_inode_log_page *curr_page;
-	struct nova_inode_log_page *alter_page;
-
-	if (metadata_csum == 0)
-		return;
-
-	curr_page = nova_get_block(sb, BLOCK_OFF(curr));
-	alter_page = nova_get_block(sb, BLOCK_OFF(alter_curr));
-
-	curr_page->page_tail.alter_page = alter_curr;
-	nova_flush_buffer(&curr_page->page_tail,
-				sizeof(struct nova_inode_page_tail), 0);
-
-	alter_page->page_tail.alter_page = curr;
-	nova_flush_buffer(&alter_page->page_tail,
-				sizeof(struct nova_inode_page_tail), 0);
-}
-
 #define	CACHE_ALIGN(p)	((p) & ~(CACHELINE_SIZE - 1))
 
 static inline bool is_last_entry(u64 curr_p, size_t size)
@@ -815,12 +735,6 @@ void nova_init_header(struct super_block *sb,
 	struct nova_inode_info_header *sih, u16 i_mode);
 int nova_recovery(struct super_block *sb);
 
-/* checksum.c */
-void nova_update_entry_csum(void *entry);
-int nova_update_alter_entry(struct super_block *sb, void *entry);
-int nova_check_inode_integrity(struct super_block *sb, u64 ino, u64 pi_addr,
-	u64 alter_pi_addr, struct nova_inode *pic, int check_replica);
-
 /*
  * Inodes and files operations
  */
@@ -838,7 +752,7 @@ int nova_reassign_file_tree(struct super_block *sb,
 unsigned long nova_check_existing_entry(struct super_block *sb,
 	struct inode *inode, unsigned long num_blocks, unsigned long start_blk,
 	struct nova_file_write_entry **ret_entry,
-	struct nova_file_write_entry *ret_entryc, int check_next, u64 epoch_id,
+	int check_next, u64 epoch_id,
 	int *inplace, int locked);
 int nova_dax_get_blocks(struct inode *inode, sector_t iblock,
 	unsigned long max_blocks, u32 *bno, bool *new, bool *boundary,
@@ -900,7 +814,7 @@ extern const struct file_operations nova_wrap_file_operations;
 /* gc.c */
 int nova_inode_log_fast_gc(struct super_block *sb,
 	struct nova_inode *pi, struct nova_inode_info_header *sih,
-	u64 curr_tail, u64 new_block, u64 alter_new_block, int num_pages,
+	u64 curr_tail, u64 new_block, int num_pages,
 	int force_thorough);
 
 /* ioctl.c */

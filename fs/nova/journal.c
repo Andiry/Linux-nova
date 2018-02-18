@@ -113,24 +113,6 @@ static int nova_check_journal_entries(struct super_block *sb,
 
 /**************************** Journal Recovery ******************************/
 
-static void nova_undo_journal_inode(struct super_block *sb,
-	struct nova_lite_journal_entry *entry)
-{
-	struct nova_inode *pi, *alter_pi;
-	u64 pi_addr, alter_pi_addr;
-
-	if (metadata_csum == 0)
-		return;
-
-	pi_addr = le64_to_cpu(entry->data1);
-	alter_pi_addr = le64_to_cpu(entry->data2);
-
-	pi = (struct nova_inode *)nova_get_block(sb, pi_addr);
-	alter_pi = (struct nova_inode *)nova_get_block(sb, alter_pi_addr);
-
-	memcpy_to_pmem_nocache(pi, alter_pi, sizeof(struct nova_inode));
-}
-
 static void nova_undo_journal_entry(struct super_block *sb,
 	struct nova_lite_journal_entry *entry)
 {
@@ -152,7 +134,6 @@ static void nova_undo_lite_journal_entry(struct super_block *sb,
 
 	switch (type) {
 	case JOURNAL_INODE:
-		nova_undo_journal_inode(sb, entry);
 		break;
 	case JOURNAL_ENTRY:
 		nova_undo_journal_entry(sb, entry);
@@ -186,25 +167,6 @@ static int nova_recover_lite_journal(struct super_block *sb,
 
 /**************************** Create/commit ******************************/
 
-static u64 nova_append_replica_inode_journal(struct super_block *sb,
-	u64 curr_p, struct inode *inode)
-{
-	struct nova_lite_journal_entry *entry;
-	struct nova_inode_info *si = NOVA_I(inode);
-	struct nova_inode_info_header *sih = &si->header;
-
-	entry = (struct nova_lite_journal_entry *)nova_get_block(sb,
-							curr_p);
-	entry->type = cpu_to_le64(JOURNAL_INODE);
-	entry->padding = 0;
-	entry->data1 = cpu_to_le64(sih->pi_addr);
-	entry->data2 = cpu_to_le64(sih->alter_pi_addr);
-	nova_update_journal_entry_csum(sb, entry);
-
-	curr_p = next_lite_journal(curr_p);
-	return curr_p;
-}
-
 /* Create and append an undo entry for a small update to PMEM. */
 static u64 nova_append_entry_journal(struct super_block *sb,
 	u64 curr_p, void *field)
@@ -234,9 +196,7 @@ static u64 nova_journal_inode_tail(struct super_block *sb,
 	u64 curr_p, struct nova_inode *pi)
 {
 	curr_p = nova_append_entry_journal(sb, curr_p, &pi->log_tail);
-	if (metadata_csum)
-		curr_p = nova_append_entry_journal(sb, curr_p,
-						&pi->alter_log_tail);
+
 	return curr_p;
 }
 
@@ -246,9 +206,6 @@ static u64 nova_append_inode_journal(struct super_block *sb,
 	int invalidate, int is_dir)
 {
 	struct nova_inode *pi = nova_get_inode(sb, inode);
-
-	if (metadata_csum)
-		return nova_append_replica_inode_journal(sb, curr_p, inode);
 
 	if (!pi) {
 		nova_err(sb, "%s: get inode failed\n", __func__);

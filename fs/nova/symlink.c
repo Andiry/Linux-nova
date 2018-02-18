@@ -39,7 +39,6 @@ int nova_block_symlink(struct super_block *sb, struct nova_inode *pi,
 	int ret;
 
 	update.tail = sih->log_tail;
-	update.alter_tail = sih->alter_log_tail;
 
 	allocated = nova_new_data_blocks(sb, sih, &name_blocknr, 0, 1,
 				 ALLOC_INIT_ZERO, ANY_CPU, ALLOC_FROM_TAIL);
@@ -68,7 +67,7 @@ int nova_block_symlink(struct super_block *sb, struct nova_inode *pi,
 		return ret;
 	}
 
-	nova_update_inode(sb, inode, pi, &update, 1);
+	nova_update_inode(sb, inode, pi, &update);
 	sih->trans_id++;
 
 	return 0;
@@ -94,7 +93,6 @@ out:
 static int nova_readlink(struct dentry *dentry, char __user *buffer, int buflen)
 {
 	struct nova_file_write_entry *entry;
-	struct nova_file_write_entry *entryc, entry_copy;
 	struct inode *inode = dentry->d_inode;
 	struct super_block *sb = inode->i_sb;
 	struct nova_inode_info *si = NOVA_I(inode);
@@ -104,15 +102,7 @@ static int nova_readlink(struct dentry *dentry, char __user *buffer, int buflen)
 	entry = (struct nova_file_write_entry *)nova_get_block(sb,
 							sih->log_head);
 
-	if (metadata_csum == 0)
-		entryc = entry;
-	else {
-		entryc = &entry_copy;
-		if (!nova_verify_entry_csum(sb, entry, entryc))
-			return -EIO;
-	}
-
-	blockp = (char *)nova_get_block(sb, BLOCK_OFF(entryc->block));
+	blockp = (char *)nova_get_block(sb, BLOCK_OFF(entry->block));
 
 	return nova_readlink_copy(buffer, buflen, blockp);
 }
@@ -121,7 +111,6 @@ static const char *nova_get_link(struct dentry *dentry, struct inode *inode,
 	struct delayed_call *done)
 {
 	struct nova_file_write_entry *entry;
-	struct nova_file_write_entry *entryc, entry_copy;
 	struct super_block *sb = inode->i_sb;
 	struct nova_inode_info *si = NOVA_I(inode);
 	struct nova_inode_info_header *sih = &si->header;
@@ -129,15 +118,8 @@ static const char *nova_get_link(struct dentry *dentry, struct inode *inode,
 
 	entry = (struct nova_file_write_entry *)nova_get_block(sb,
 							sih->log_head);
-	if (metadata_csum == 0)
-		entryc = entry;
-	else {
-		entryc = &entry_copy;
-		if (!nova_verify_entry_csum(sb, entry, entryc))
-			return NULL;
-	}
 
-	blockp = (char *)nova_get_block(sb, BLOCK_OFF(entryc->block));
+	blockp = (char *)nova_get_block(sb, BLOCK_OFF(entry->block));
 
 	return blockp;
 }

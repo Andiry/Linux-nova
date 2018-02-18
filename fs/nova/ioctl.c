@@ -82,11 +82,10 @@ long nova_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		nova_set_inode_flags(inode, pi, flags);
 
 		update.tail = 0;
-		update.alter_tail = 0;
 		ret = nova_append_link_change_entry(sb, pi, inode,
 					&update, &old_linkc, epoch_id);
 		if (!ret) {
-			nova_update_inode(sb, inode, pi, &update, 1);
+			nova_update_inode(sb, inode, pi, &update);
 			nova_invalidate_link_change_entry(sb, old_linkc);
 		}
 		sih->trans_id++;
@@ -119,11 +118,10 @@ flags_out:
 		inode->i_generation = generation;
 
 		update.tail = 0;
-		update.alter_tail = 0;
 		ret = nova_append_link_change_entry(sb, pi, inode,
 					&update, &old_linkc, epoch_id);
 		if (!ret) {
-			nova_update_inode(sb, inode, pi, &update, 1);
+			nova_update_inode(sb, inode, pi, &update);
 			nova_invalidate_link_change_entry(sb, old_linkc);
 		}
 		sih->trans_id++;

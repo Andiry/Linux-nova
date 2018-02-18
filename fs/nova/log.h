@@ -25,7 +25,7 @@ struct nova_inode_page_tail {
 	__le32	invalid_entries;
 	__le32	num_entries;
 	__le64	epoch_id;	/* For snapshot list page */
-	__le64	alter_page;	/* Corresponding page in the other log */
+	__le64	padding;
 	__le64	next_page;
 } __attribute((__packed__));
 
@@ -166,11 +166,8 @@ struct nova_link_change_entry {
  */
 struct nova_inode_update {
 	u64 head;
-	u64 alter_head;
 	u64 tail;
-	u64 alter_tail;
 	u64 curr_entry;
-	u64 alter_entry;
 	struct nova_dentry *create_dentry;
 	struct nova_dentry *delete_dentry;
 };
@@ -221,6 +218,12 @@ static inline size_t nova_get_log_entry_size(struct super_block *sb,
 	return size;
 }
 
+static inline void nova_persist_entry(void *entry)
+{
+	size_t entry_len = CACHELINE_SIZE;
+
+	nova_flush_buffer(entry, entry_len, 0);
+}
 
 int nova_invalidate_logentry(struct super_block *sb, void *entry,
 	enum nova_entry_type type, unsigned int num_free);
@@ -238,8 +241,6 @@ unsigned int nova_free_old_entry(struct super_block *sb,
 	bool delete_dead, u64 epoch_id);
 int nova_free_inode_log(struct super_block *sb, struct nova_inode *pi,
 	struct nova_inode_info_header *sih);
-int nova_update_alter_pages(struct super_block *sb, struct nova_inode *pi,
-	u64 curr, u64 alter_curr);
 struct nova_file_write_entry *nova_find_next_entry(struct super_block *sb,
 	struct nova_inode_info_header *sih, pgoff_t pgoff);
 int nova_allocate_inode_log_pages(struct super_block *sb,
@@ -267,7 +268,7 @@ int nova_append_file_write_entry(struct super_block *sb, struct nova_inode *pi,
 int nova_assign_write_entry(struct super_block *sb,
 	struct nova_inode_info_header *sih,
 	struct nova_file_write_entry *entry,
-	struct nova_file_write_entry *entryc, bool free);
+	bool free);
 
 
 void nova_print_curr_log_page(struct super_block *sb, u64 curr);

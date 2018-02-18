@@ -165,7 +165,6 @@ static long nova_fallocate(struct file *file, int mode, loff_t offset,
 	struct nova_inode_info_header *sih = &si->header;
 	struct nova_inode *pi;
 	struct nova_file_write_entry *entry;
-	struct nova_file_write_entry *entryc, entry_copy;
 	struct nova_file_write_entry entry_data;
 	struct nova_inode_update update;
 	unsigned long start_blk, num_blocks, ent_blks = 0;
@@ -227,20 +226,16 @@ static long nova_fallocate(struct file *file, int mode, loff_t offset,
 
 	epoch_id = nova_get_epoch_id(sb);
 	update.tail = sih->log_tail;
-	update.alter_tail = sih->alter_log_tail;
 	while (num_blocks > 0) {
 		ent_blks = nova_check_existing_entry(sb, inode, num_blocks,
-						start_blk, &entry, &entry_copy,
+						start_blk, &entry,
 						1, epoch_id, &inplace, 1);
 
-		entryc = (metadata_csum == 0) ? entry : &entry_copy;
-
 		if (entry && inplace) {
-			if (entryc->size < new_size) {
+			if (entry->size < new_size) {
 				/* Update existing entry */
 				entry->size = new_size;
-				nova_update_entry_csum(entry);
-				nova_update_alter_entry(sb, entry);
+				nova_persist_entry(entry);
 			}
 			allocated = ent_blks;
 			goto next;
@@ -292,11 +287,8 @@ next:
 
 	if (update_log) {
 		sih->log_tail = update.tail;
-		sih->alter_log_tail = update.alter_tail;
 
 		nova_update_tail(pi, update.tail);
-		if (metadata_csum)
-			nova_update_alter_tail(pi, update.alter_tail);
 
 		/* Update file tree */
 		ret = nova_reassign_file_tree(sb, sih, begin_tail);
@@ -316,8 +308,7 @@ next:
 		sih->i_size = new_size;
 	}
 
-	nova_update_inode_checksum(pi);
-	nova_update_alter_inode(sb, inode, pi);
+	nova_persist_inode(pi);
 
 	sih->trans_id++;
 out:
@@ -409,7 +400,6 @@ do_dax_mapping_read(struct file *filp, char __user *buf,
 	struct nova_inode_info *si = NOVA_I(inode);
 	struct nova_inode_info_header *sih = &si->header;
 	struct nova_file_write_entry *entry;
-	struct nova_file_write_entry *entryc, entry_copy;
 	pgoff_t index, end_index;
 	unsigned long offset;
 	loff_t isize, pos;
@@ -438,8 +428,6 @@ do_dax_mapping_read(struct file *filp, char __user *buf,
 	if (len <= 0)
 		goto out;
 
-	entryc = (metadata_csum == 0) ? entry : &entry_copy;
-
 	end_index = (isize - 1) >> PAGE_SHIFT;
 	do {
 		unsigned long nr, left;
@@ -465,27 +453,22 @@ do_dax_mapping_read(struct file *filp, char __user *buf,
 			goto memcpy;
 		}
 
-		if (metadata_csum == 0)
-			entryc = entry;
-		else if (!nova_verify_entry_csum(sb, entry, entryc))
-			return -EIO;
-
 		/* Find contiguous blocks */
-		if (index < entryc->pgoff ||
-			index - entryc->pgoff >= entryc->num_pages) {
+		if (index < entry->pgoff ||
+			index - entry->pgoff >= entry->num_pages) {
 			nova_err(sb, "%s ERROR: %lu, entry pgoff %llu, num %u, blocknr %llu\n",
 				__func__, index, entry->pgoff,
 				entry->num_pages, entry->block >> PAGE_SHIFT);
 			return -EINVAL;
 		}
-		if (entryc->reassigned == 0) {
-			nr = (entryc->num_pages - (index - entryc->pgoff))
+		if (entry->reassigned == 0) {
+			nr = (entry->num_pages - (index - entry->pgoff))
 				* PAGE_SIZE;
 		} else {
 			nr = PAGE_SIZE;
 		}
 
-		nvmm = get_nvmm(sb, sih, entryc, index);
+		nvmm = get_nvmm(sb, sih, entry, index);
 		dax_mem = nova_get_block(sb, (nvmm << PAGE_SHIFT));
 
 memcpy:
@@ -558,7 +541,7 @@ static ssize_t do_nova_cow_file_write(struct file *filp,
 	struct nova_inode_info *si = NOVA_I(inode);
 	struct nova_inode_info_header *sih = &si->header;
 	struct super_block *sb = inode->i_sb;
-	struct nova_inode *pi, inode_copy;
+	struct nova_inode *pi;
 	struct nova_file_write_entry entry_data;
 	struct nova_inode_update update;
 	ssize_t	    written = 0;
@@ -600,15 +583,6 @@ static ssize_t do_nova_cow_file_write(struct file *filp,
 
 	pi = nova_get_block(sb, sih->pi_addr);
 
-	/* nova_inode tail pointer will be updated and we make sure all other
-	 * inode fields are good before checksumming the whole structure
-	 */
-	if (nova_check_inode_integrity(sb, sih->ino, sih->pi_addr,
-			sih->alter_pi_addr, &inode_copy, 0) < 0) {
-		ret = -EIO;
-		goto out;
-	}
-
 	offset = pos & (sb->s_blocksize - 1);
 	num_blocks = ((count + offset - 1) >> sb->s_blocksize_bits) + 1;
 	total_blocks = num_blocks;
@@ -637,7 +611,6 @@ static ssize_t do_nova_cow_file_write(struct file *filp,
 
 	epoch_id = nova_get_epoch_id(sb);
 	update.tail = sih->log_tail;
-	update.alter_tail = sih->alter_log_tail;
 	while (num_blocks > 0) {
 		offset = pos & (nova_inode_blk_size(sih) - 1);
 		start_blk = pos >> sb->s_blocksize_bits;
@@ -720,7 +693,7 @@ static ssize_t do_nova_cow_file_write(struct file *filp,
 	data_bits = blk_type_to_shift[sih->i_blk_type];
 	sih->i_blocks += (total_blocks << (data_bits - sb->s_blocksize_bits));
 
-	nova_update_inode(sb, inode, pi, &update, 1);
+	nova_update_inode(sb, inode, pi, &update);
 
 	/* Free the overlap blocks after the write is committed */
 	ret = nova_reassign_file_tree(sb, sih, begin_tail);
