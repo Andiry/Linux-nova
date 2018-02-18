@@ -943,7 +943,6 @@ int nova_insert_write_vma(struct vm_area_struct *vma)
 	struct vma_item *item, *curr;
 	struct rb_node **temp, *parent;
 	int compVal;
-	int insert = 0;
 	int ret = 0;
 	timing_t insert_vma_time;
 
@@ -991,18 +990,9 @@ int nova_insert_write_vma(struct vm_area_struct *vma)
 	rb_insert_color(&item->node, &sih->vma_tree);
 
 	sih->num_vmas++;
-	if (sih->num_vmas == 1)
-		insert = 1;
-
 	sih->trans_id++;
 out:
 	inode_unlock(inode);
-
-	if (insert) {
-		mutex_lock(&sbi->vma_mutex);
-		list_add_tail(&sih->list, &sbi->mmap_sih_list);
-		mutex_unlock(&sbi->vma_mutex);
-	}
 
 	NOVA_END_TIMING(insert_vma_t, insert_vma_time);
 	return ret;
@@ -1020,7 +1010,6 @@ static int nova_remove_write_vma(struct vm_area_struct *vma)
 	struct rb_node *temp;
 	int compVal;
 	int found = 0;
-	int remove = 0;
 	timing_t remove_vma_time;
 
 
@@ -1043,11 +1032,8 @@ static int nova_remove_write_vma(struct vm_area_struct *vma)
 		}
 	}
 
-	if (found) {
+	if (found)
 		sih->num_vmas--;
-		if (sih->num_vmas == 0)
-			remove = 1;
-	}
 
 	inode_unlock(inode);
 
@@ -1056,12 +1042,6 @@ static int nova_remove_write_vma(struct vm_area_struct *vma)
 			  inode->i_ino,	curr->vma, curr->vma->vm_start,
 			  curr->vma->vm_end, curr->vma->vm_pgoff);
 		nova_free_vma_item(sb, curr);
-	}
-
-	if (remove) {
-		mutex_lock(&sbi->vma_mutex);
-		list_del(&sih->list);
-		mutex_unlock(&sbi->vma_mutex);
 	}
 
 	NOVA_END_TIMING(remove_vma_t, remove_vma_time);

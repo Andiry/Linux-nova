@@ -148,10 +148,6 @@ struct nova_sb_info {
 	wait_queue_head_t snapshot_mmap_wait;
 	void *curr_clean_snapshot_info;
 
-	/* DAX-mmap snapshot structures */
-	struct mutex vma_mutex;
-	struct list_head mmap_sih_list;
-
 	/* ZEROED page for cache page initialized */
 	void *zeroed_page;
 

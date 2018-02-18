@@ -603,9 +603,6 @@ static int nova_fill_super(struct super_block *sb, void *data, int silent)
 	sbi->gid = current_fsgid();
 	set_opt(sbi->s_mount_opt, HUGEIOREMAP);
 
-	mutex_init(&sbi->vma_mutex);
-	INIT_LIST_HEAD(&sbi->mmap_sih_list);
-
 	sbi->inode_maps = kcalloc(sbi->cpus, sizeof(struct inode_map),
 					GFP_KERNEL);
 	if (!sbi->inode_maps) {
