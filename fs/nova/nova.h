@@ -164,13 +164,6 @@ static inline __le32 nova_mask_flags(umode_t mode, __le32 flags)
 		return flags & cpu_to_le32(NOVA_OTHER_FLMASK);
 }
 
-/* Update the crc32c value by appending a 64b data word. */
-#define nova_crc32c_qword(qword, crc) do { \
-	asm volatile ("crc32q %1, %0" \
-		: "=r" (crc) \
-		: "r" (qword), "0" (crc)); \
-	} while (0)
-
 static inline u32 nova_crc32c(u32 crc, const u8 *data, size_t len)
 {
 	u8 *ptr = (u8 *) data;
@@ -214,40 +207,6 @@ static inline u32 nova_crc32c(u32 crc, const u8 *data, size_t len)
 	}
 
 	return csum;
-}
-
-/* uses CPU instructions to atomically write up to 8 bytes */
-static inline void nova_memcpy_atomic(void *dst, const void *src, u8 size)
-{
-	switch (size) {
-	case 1: {
-		volatile u8 *daddr = dst;
-		const u8 *saddr = src;
-		*daddr = *saddr;
-		break;
-	}
-	case 2: {
-		volatile __le16 *daddr = dst;
-		const u16 *saddr = src;
-		*daddr = cpu_to_le16(*saddr);
-		break;
-	}
-	case 4: {
-		volatile __le32 *daddr = dst;
-		const u32 *saddr = src;
-		*daddr = cpu_to_le32(*saddr);
-		break;
-	}
-	case 8: {
-		volatile __le64 *daddr = dst;
-		const u64 *saddr = src;
-		*daddr = cpu_to_le64(*saddr);
-		break;
-	}
-	default:
-		nova_dbg("error: memcpy_atomic called with %d bytes\n", size);
-		//BUG();
-	}
 }
 
 static inline int memcpy_to_pmem_nocache(void *dst, const void *src,
@@ -397,23 +356,7 @@ struct vma_item {
 	struct vm_area_struct *vma;
 };
 
-enum bm_type {
-	BM_4K = 0,
-	BM_2M,
-	BM_1G,
-};
-
-struct single_scan_bm {
-	unsigned long bitmap_size;
-	unsigned long *bitmap;
-};
-
-struct scan_bitmap {
-	struct single_scan_bm scan_bm_4K;
-	struct single_scan_bm scan_bm_2M;
-	struct single_scan_bm scan_bm_1G;
-};
-
+#include "bbuild.h"
 
 
 struct inode_map {
