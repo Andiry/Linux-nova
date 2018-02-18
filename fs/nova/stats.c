@@ -128,7 +128,6 @@ const char *Timingstring[TIMING_NUM] = {
 	"free_inode",
 	"free_inode_log",
 	"evict_inode",
-	"test_perf",
 	"wprotect",
 
 	/* Mmap */
