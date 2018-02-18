@@ -495,15 +495,6 @@ static inline unsigned long nova_get_pfn(struct super_block *sb, u64 block)
 
 
 
-/* bbuild.c */
-inline void set_bm(unsigned long bit, struct scan_bitmap *bm,
-	enum bm_type type);
-void nova_save_blocknode_mappings_to_log(struct super_block *sb);
-void nova_save_inode_list_to_log(struct super_block *sb);
-void nova_init_header(struct super_block *sb,
-	struct nova_inode_info_header *sih, u16 i_mode);
-int nova_recovery(struct super_block *sb);
-
 /*
  * Inodes and files operations
  */
@@ -625,7 +616,7 @@ extern struct proc_dir_entry *nova_proc_root;
 void nova_sysfs_init(struct super_block *sb);
 void nova_sysfs_exit(struct super_block *sb);
 
-/* nova_stats.c */
+/* stats.c */
 void nova_get_timing_stats(void);
 void nova_get_IO_stats(void);
 void nova_print_timing_stats(struct super_block *sb);
