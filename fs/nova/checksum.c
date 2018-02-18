@@ -64,13 +64,6 @@ static int nova_get_entry_copy(struct super_block *sb, void *entry,
 			break;
 		*entry_csum = LCENTRY(entry_copy)->csum;
 		break;
-	case SNAPSHOT_INFO:
-		*entry_size = sizeof(struct nova_snapshot_info_entry);
-		ret = memcpy_mcsafe(entry_copy, entry, *entry_size);
-		if (ret < 0)
-			break;
-		*entry_csum = SNENTRY(entry_copy)->csum;
-		break;
 	default:
 		*entry_csum = 0;
 		*entry_size = 0;
@@ -114,10 +107,6 @@ static u32 nova_calc_entry_csum(void *entry)
 	case LINK_CHANGE:
 		entry_len = sizeof(struct nova_link_change_entry);
 		csum_addr = &LCENTRY(entry)->csum;
-		break;
-	case SNAPSHOT_INFO:
-		entry_len = sizeof(struct nova_snapshot_info_entry);
-		csum_addr = &SNENTRY(entry)->csum;
 		break;
 	default:
 		entry_len = 0;
@@ -175,10 +164,6 @@ void nova_update_entry_csum(void *entry)
 	case LINK_CHANGE:
 		LCENTRY(entry)->csum = cpu_to_le32(csum);
 		entry_len = sizeof(struct nova_link_change_entry);
-		break;
-	case SNAPSHOT_INFO:
-		SNENTRY(entry)->csum = cpu_to_le32(csum);
-		entry_len = sizeof(struct nova_snapshot_info_entry);
 		break;
 	default:
 		entry_len = 0;

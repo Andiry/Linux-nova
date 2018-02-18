@@ -919,13 +919,6 @@ void nova_evict_inode(struct inode *inode)
 		nova_print_inode_log(sb, inode);
 	}
 
-	/* Check if this inode exists in at least one snapshot. */
-	if (pi && pi->valid == 0) {
-		ret = nova_append_inode_to_snapshot(sb, pi);
-		if (ret == 0)
-			goto out;
-	}
-
 	nova_dbg_verbose("%s: %lu\n", __func__, inode->i_ino);
 	if (!inode->i_nlink && !is_bad_inode(inode)) {
 		if (IS_APPEND(inode) || IS_IMMUTABLE(inode))
@@ -1177,13 +1170,9 @@ int nova_write_inode(struct inode *inode, struct writeback_control *wbc)
 void nova_dirty_inode(struct inode *inode, int flags)
 {
 	struct super_block *sb = inode->i_sb;
-	struct nova_sb_info *sbi = NOVA_SB(sb);
 	struct nova_inode_info *si = NOVA_I(inode);
 	struct nova_inode_info_header *sih = &si->header;
 	struct nova_inode *pi, inode_copy;
-
-	if (sbi->mount_snapshot)
-		return;
 
 	pi = nova_get_block(sb, sih->pi_addr);
 

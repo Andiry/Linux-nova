@@ -84,7 +84,6 @@ enum timing_category {
 	append_file_entry_t,
 	append_link_change_t,
 	append_setattr_t,
-	append_snapshot_info_t,
 	update_entry_t,
 
 	/* Tree */
@@ -141,15 +140,6 @@ enum timing_category {
 	rebuild_title_t,
 	rebuild_dir_t,
 	rebuild_file_t,
-	rebuild_snapshot_t,
-
-	/* Snapshot */
-	snapshot_title_t,
-	create_snapshot_t,
-	init_snapshot_info_t,
-	delete_snapshot_t,
-	append_snapshot_file_t,
-	append_snapshot_inode_t,
 
 	/* Sentinel */
 	TIMING_NUM,
@@ -169,7 +159,6 @@ enum stats_category {
 	dirty_pages,
 	protect_head,
 	protect_tail,
-	dax_cow_during_snapshot,
 	mapping_updated_pages,
 	cow_overlap_mmap,
 	dax_new_blocks,

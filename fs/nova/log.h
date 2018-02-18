@@ -42,7 +42,6 @@ enum nova_entry_type {
 	DIR_LOG,
 	SET_ATTR,
 	LINK_CHANGE,
-	SNAPSHOT_INFO,
 	NEXT_PAGE,
 };
 
@@ -160,23 +159,6 @@ struct nova_link_change_entry {
 
 #define LCENTRY(entry)	((struct nova_link_change_entry *) entry)
 
-/*
- * Log entry for the creation of a snapshot.  Only occurs in the log of the
- * dedicated snapshot inode.
- */
-struct nova_snapshot_info_entry {
-	u8	type;
-	u8	deleted;
-	u8	paddings[6];
-	__le64	epoch_id;
-	__le64	timestamp;
-	__le64	nvmm_page_addr;
-	__le32	csumpadding;
-	__le32	csum;
-} __attribute((__packed__));
-
-#define SNENTRY(entry)	((struct nova_snapshot_info_entry *) entry)
-
 
 /*
  * Transient DRAM structure that describes changes needed to append a log entry
@@ -232,9 +214,6 @@ static inline size_t nova_get_log_entry_size(struct super_block *sb,
 	case LINK_CHANGE:
 		size = sizeof(struct nova_link_change_entry);
 		break;
-	case SNAPSHOT_INFO:
-		size = sizeof(struct nova_snapshot_info_entry);
-		break;
 	default:
 		break;
 	}
@@ -284,10 +263,6 @@ int nova_inplace_update_write_entry(struct super_block *sb,
 	struct nova_log_entry_info *entry_info);
 int nova_append_file_write_entry(struct super_block *sb, struct nova_inode *pi,
 	struct inode *inode, struct nova_file_write_entry *data,
-	struct nova_inode_update *update);
-int nova_append_snapshot_info_entry(struct super_block *sb,
-	struct nova_inode *pi, struct nova_inode_info *si,
-	struct snapshot_info *info, struct nova_snapshot_info_entry *data,
 	struct nova_inode_update *update);
 int nova_assign_write_entry(struct super_block *sb,
 	struct nova_inode_info_header *sih,

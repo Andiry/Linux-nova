@@ -53,10 +53,6 @@ static int nova_execute_invalidate_reassign_logentry(struct super_block *sb,
 		((struct nova_link_change_entry *)entry)->invalid = 1;
 		invalid = 1;
 		break;
-	case SNAPSHOT_INFO:
-		((struct nova_snapshot_info_entry *)entry)->deleted = 1;
-		invalid = 1;
-		break;
 	default:
 		break;
 	}
@@ -126,7 +122,6 @@ unsigned int nova_free_old_entry(struct super_block *sb,
 {
 	struct nova_file_write_entry *entryc, entry_copy;
 	unsigned long old_nvmm;
-	int ret;
 	timing_t free_time;
 
 	if (!entry)
@@ -144,22 +139,13 @@ unsigned int nova_free_old_entry(struct super_block *sb,
 
 	old_nvmm = get_nvmm(sb, sih, entryc, pgoff);
 
-	if (!delete_dead) {
-		ret = nova_append_data_to_snapshot(sb, entryc, old_nvmm,
-				num_free, epoch_id);
-		if (ret == 0) {
-			nova_invalidate_write_entry(sb, entry, 1, 0);
-			goto out;
-		}
-
+	if (!delete_dead)
 		nova_invalidate_write_entry(sb, entry, 1, num_free);
-	}
 
 	nova_dbgv("%s: pgoff %lu, free %u blocks\n",
 				__func__, pgoff, num_free);
 	nova_free_data_blocks(sb, sih, old_nvmm, num_free);
 
-out:
 	sih->i_blocks -= num_free;
 
 	NOVA_END_TIMING(free_old_t, free_time);
@@ -359,10 +345,6 @@ static int nova_update_log_entry(struct super_block *sb, struct inode *inode,
 		break;
 	case LINK_CHANGE:
 		nova_update_link_change_entry(inode, entry, entry_info);
-		break;
-	case SNAPSHOT_INFO:
-		memcpy_to_pmem_nocache(entry, entry_info->data,
-				sizeof(struct nova_snapshot_info_entry));
 		break;
 	default:
 		break;
@@ -604,10 +586,6 @@ int nova_handle_setattr_operation(struct super_block *sb, struct inode *inode,
 
 	/*
 	 * Let's try to do inplace update.
-	 * If there are currently no snapshots holding this inode,
-	 * we can update the inode in place. If a snapshot creation
-	 * is in progress, we will use the create_snapshot_epoch_id
-	 * as the latest snapshot id.
 	 */
 	if (!(ia_valid & ATTR_SIZE) &&
 			nova_can_inplace_update_setattr(sb, sih, epoch_id)) {
@@ -858,43 +836,6 @@ int nova_append_file_write_entry(struct super_block *sb, struct nova_inode *pi,
 		nova_err(sb, "%s failed\n", __func__);
 
 	NOVA_END_TIMING(append_file_entry_t, append_time);
-	return ret;
-}
-
-int nova_append_snapshot_info_entry(struct super_block *sb,
-	struct nova_inode *pi, struct nova_inode_info *si,
-	struct snapshot_info *info, struct nova_snapshot_info_entry *data,
-	struct nova_inode_update *update)
-{
-	struct nova_inode_info_header *sih = &si->header;
-	struct nova_inode inode_copy;
-	struct nova_log_entry_info entry_info;
-	timing_t append_time;
-	int ret;
-
-	NOVA_START_TIMING(append_snapshot_info_t, append_time);
-
-	nova_update_entry_csum(data);
-
-	entry_info.type = SNAPSHOT_INFO;
-	entry_info.update = update;
-	entry_info.data = data;
-	entry_info.epoch_id = data->epoch_id;
-	entry_info.inplace = 0;
-
-	if (nova_check_inode_integrity(sb, sih->ino, sih->pi_addr,
-			sih->alter_pi_addr, &inode_copy, 0) < 0) {
-		ret = -EIO;
-		goto out;
-	}
-
-	ret = nova_append_log_entry(sb, pi, NULL, sih, &entry_info);
-	if (ret)
-		nova_err(sb, "%s failed\n", __func__);
-
-	info->snapshot_entry = entry_info.curr_p;
-out:
-	NOVA_END_TIMING(append_snapshot_info_t, append_time);
 	return ret;
 }
 

@@ -76,8 +76,6 @@ struct nova_super_block {
 #define NOVA_BLOCKNODE_INO	(3)     /* Storage for allocator state */
 #define NOVA_LITEJOURNAL_INO	(4)     /* Storage for lightweight journals */
 #define NOVA_INODELIST1_INO	(5)     /* Storage for Inode free list */
-#define NOVA_SNAPSHOT_INO	(6)	/* Storage for snapshot state */
-#define NOVA_TEST_PERF_INO	(7)
 
 
 /* Normal inode starts at 32 */
@@ -132,21 +130,8 @@ struct nova_sb_info {
 	int cpus;
 	struct proc_dir_entry *s_proc;
 
-	/* Snapshot related */
-	struct nova_inode_info	*snapshot_si;
-	struct radix_tree_root	snapshot_info_tree;
-	int num_snapshots;
 	/* Current epoch. volatile guarantees visibility */
 	volatile u64 s_epoch_id;
-	volatile int snapshot_taking;
-
-	int mount_snapshot;
-	u64 mount_snapshot_epoch_id;
-
-	struct task_struct *snapshot_cleaner_thread;
-	wait_queue_head_t snapshot_cleaner_wait;
-	wait_queue_head_t snapshot_mmap_wait;
-	void *curr_clean_snapshot_info;
 
 	/* ZEROED page for cache page initialized */
 	void *zeroed_page;
@@ -203,5 +188,4 @@ extern void nova_free_range_node(struct nova_range_node *node);
 extern void nova_update_super_crc(struct super_block *sb);
 extern void nova_sync_super(struct super_block *sb);
 
-struct snapshot_info *nova_alloc_snapshot_info(struct super_block *sb);
 #endif

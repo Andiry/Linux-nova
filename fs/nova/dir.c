@@ -486,89 +486,6 @@ int nova_invalidate_dentries(struct super_block *sb,
 	return ret;
 }
 
-static int nova_readdir_slow(struct file *file, struct dir_context *ctx)
-{
-	struct inode *inode = file_inode(file);
-	struct super_block *sb = inode->i_sb;
-	struct nova_inode *pidir;
-	struct nova_inode_info *si = NOVA_I(inode);
-	struct nova_inode_info_header *sih = &si->header;
-	struct nova_inode *child_pi;
-	struct nova_dentry *entry;
-	struct nova_dentry *entryc, entry_copy;
-	struct nova_dentry *entries[FREE_BATCH];
-	int nr_entries;
-	u64 pi_addr;
-	unsigned long pos = 0;
-	ino_t ino;
-	int i;
-	int ret;
-	timing_t readdir_time;
-
-	NOVA_START_TIMING(readdir_t, readdir_time);
-	pidir = nova_get_inode(sb, inode);
-	nova_dbgv("%s: ino %llu, size %llu, pos %llu\n",
-			__func__, (u64)inode->i_ino,
-			pidir->i_size, ctx->pos);
-
-	if (!sih) {
-		nova_dbg("%s: inode %lu sih does not exist!\n",
-				__func__, inode->i_ino);
-		ctx->pos = READDIR_END;
-		return 0;
-	}
-
-	pos = ctx->pos;
-	if (pos == READDIR_END)
-		goto out;
-
-	entryc = (metadata_csum == 0) ? entry : &entry_copy;
-
-	do {
-		nr_entries = radix_tree_gang_lookup(&sih->tree,
-					(void **)entries, pos, FREE_BATCH);
-		for (i = 0; i < nr_entries; i++) {
-			entry = entries[i];
-
-			if (metadata_csum == 0)
-				entryc = entry;
-			else if (!nova_verify_entry_csum(sb, entry, entryc))
-				return -EIO;
-
-			pos = BKDRHash(entryc->name, entryc->name_len);
-			ino = __le64_to_cpu(entryc->ino);
-			if (ino == 0)
-				continue;
-
-			ret = nova_get_inode_address(sb, ino, 0, &pi_addr,
-						     0, 0);
-
-			if (ret) {
-				nova_dbg("%s: get child inode %lu address failed %d\n",
-					 __func__, ino, ret);
-				ctx->pos = READDIR_END;
-				return ret;
-			}
-
-			child_pi = nova_get_block(sb, pi_addr);
-			nova_dbgv("ctx: ino %llu, name %s, name_len %u, de_len %u, csum 0x%x\n",
-				(u64)ino, entry->name, entry->name_len,
-				entry->de_len, entry->csum);
-			if (!dir_emit(ctx, entryc->name, entryc->name_len,
-				ino, IF2DT(le16_to_cpu(child_pi->i_mode)))) {
-				nova_dbgv("Here: pos %llu\n", ctx->pos);
-				return 0;
-			}
-			ctx->pos = pos + 1;
-		}
-		pos++;
-	} while (nr_entries == FREE_BATCH);
-
-out:
-	NOVA_END_TIMING(readdir_t, readdir_time);
-	return 0;
-}
-
 static u64 nova_find_next_dentry_addr(struct super_block *sb,
 	struct nova_inode_info_header *sih, u64 pos)
 {
@@ -588,7 +505,7 @@ static u64 nova_find_next_dentry_addr(struct super_block *sb,
 	return addr;
 }
 
-static int nova_readdir_fast(struct file *file, struct dir_context *ctx)
+static int nova_readdir(struct file *file, struct dir_context *ctx)
 {
 	struct inode *inode = file_inode(file);
 	struct super_block *sb = inode->i_sb;
@@ -726,18 +643,6 @@ out:
 	NOVA_END_TIMING(readdir_t, readdir_time);
 	nova_dbgv("%s return\n", __func__);
 	return 0;
-}
-
-static int nova_readdir(struct file *file, struct dir_context *ctx)
-{
-	struct inode *inode = file_inode(file);
-	struct super_block *sb = inode->i_sb;
-	struct nova_sb_info *sbi = NOVA_SB(sb);
-
-	if (sbi->mount_snapshot == 0)
-		return nova_readdir_fast(file, ctx);
-	else
-		return nova_readdir_slow(file, ctx);
 }
 
 const struct file_operations nova_dir_operations = {

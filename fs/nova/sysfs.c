@@ -165,18 +165,14 @@ static int nova_seq_IO_show(struct seq_file *seq, void *v)
 	seq_printf(seq, "Dirty pages %llu\n", IOstats[dirty_pages]);
 	seq_printf(seq, "Protect head %llu, tail %llu\n",
 			IOstats[protect_head], IOstats[protect_tail]);
-	seq_printf(seq, "Page fault %llu, dax cow fault %llu, dax cow fault during snapshot creation %llu\n"
+	seq_printf(seq, "Page fault %llu, dax cow fault %llu\n"
 			"CoW write overlap mmap range %llu, mapping/pfn updated pages %llu\n",
 			Countstats[mmap_fault_t], Countstats[mmap_cow_t],
-			IOstats[dax_cow_during_snapshot],
 			IOstats[cow_overlap_mmap],
 			IOstats[mapping_updated_pages]);
 	seq_printf(seq, "fsync %llu, fdatasync %llu\n",
 			Countstats[fsync_t], IOstats[fdatasync]);
 
-	seq_puts(seq, "\n");
-
-	nova_print_snapshot_lists(sb, seq);
 	seq_puts(seq, "\n");
 
 	return 0;
@@ -258,100 +254,6 @@ static int nova_seq_allocator_open(struct inode *inode, struct file *file)
 static const struct file_operations nova_seq_allocator_fops = {
 	.owner		= THIS_MODULE,
 	.open		= nova_seq_allocator_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= single_release,
-};
-
-/* ====================== Snapshot ======================== */
-static int nova_seq_create_snapshot_show(struct seq_file *seq, void *v)
-{
-	seq_puts(seq, "Write to create a snapshot\n");
-	return 0;
-}
-
-static int nova_seq_create_snapshot_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, nova_seq_create_snapshot_show,
-				PDE_DATA(inode));
-}
-
-ssize_t nova_seq_create_snapshot(struct file *filp, const char __user *buf,
-	size_t len, loff_t *ppos)
-{
-	struct address_space *mapping = filp->f_mapping;
-	struct inode *inode = mapping->host;
-	struct super_block *sb = PDE_DATA(inode);
-
-	nova_create_snapshot(sb);
-	return len;
-}
-
-static const struct file_operations nova_seq_create_snapshot_fops = {
-	.owner		= THIS_MODULE,
-	.open		= nova_seq_create_snapshot_open,
-	.read		= seq_read,
-	.write		= nova_seq_create_snapshot,
-	.llseek		= seq_lseek,
-	.release	= single_release,
-};
-
-static int nova_seq_delete_snapshot_show(struct seq_file *seq, void *v)
-{
-	seq_puts(seq, "Echo index to delete a snapshot\n");
-	return 0;
-}
-
-static int nova_seq_delete_snapshot_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, nova_seq_delete_snapshot_show,
-				PDE_DATA(inode));
-}
-
-ssize_t nova_seq_delete_snapshot(struct file *filp, const char __user *buf,
-	size_t len, loff_t *ppos)
-{
-	struct address_space *mapping = filp->f_mapping;
-	struct inode *inode = mapping->host;
-	struct super_block *sb = PDE_DATA(inode);
-	u64 epoch_id;
-	int ret;
-
-	ret = kstrtoull(buf, 10, &epoch_id);
-	if (ret < 0)
-		nova_warn("Couldn't parse snapshot id %s", buf);
-	else
-		nova_delete_snapshot(sb, epoch_id);
-
-	return len;
-}
-
-static const struct file_operations nova_seq_delete_snapshot_fops = {
-	.owner		= THIS_MODULE,
-	.open		= nova_seq_delete_snapshot_open,
-	.read		= seq_read,
-	.write		= nova_seq_delete_snapshot,
-	.llseek		= seq_lseek,
-	.release	= single_release,
-};
-
-static int nova_seq_show_snapshots(struct seq_file *seq, void *v)
-{
-	struct super_block *sb = seq->private;
-
-	nova_print_snapshots(sb, seq);
-	return 0;
-}
-
-static int nova_seq_show_snapshots_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, nova_seq_show_snapshots,
-				PDE_DATA(inode));
-}
-
-static const struct file_operations nova_seq_show_snapshots_fops = {
-	.owner		= THIS_MODULE,
-	.open		= nova_seq_show_snapshots_open,
 	.read		= seq_read,
 	.llseek		= seq_lseek,
 	.release	= single_release,
@@ -464,12 +366,6 @@ void nova_sysfs_init(struct super_block *sb)
 				 &nova_seq_IO_fops, sb);
 		proc_create_data("allocator", 0444, sbi->s_proc,
 				 &nova_seq_allocator_fops, sb);
-		proc_create_data("create_snapshot", 0444, sbi->s_proc,
-				 &nova_seq_create_snapshot_fops, sb);
-		proc_create_data("delete_snapshot", 0444, sbi->s_proc,
-				 &nova_seq_delete_snapshot_fops, sb);
-		proc_create_data("snapshots", 0444, sbi->s_proc,
-				 &nova_seq_show_snapshots_fops, sb);
 		proc_create_data("gc", 0444, sbi->s_proc,
 				 &nova_seq_gc_fops, sb);
 	}
@@ -483,9 +379,6 @@ void nova_sysfs_exit(struct super_block *sb)
 		remove_proc_entry("timing_stats", sbi->s_proc);
 		remove_proc_entry("IO_stats", sbi->s_proc);
 		remove_proc_entry("allocator", sbi->s_proc);
-		remove_proc_entry("create_snapshot", sbi->s_proc);
-		remove_proc_entry("delete_snapshot", sbi->s_proc);
-		remove_proc_entry("snapshots", sbi->s_proc);
 		remove_proc_entry("gc", sbi->s_proc);
 		remove_proc_entry(sbi->s_bdev->bd_disk->disk_name,
 					nova_proc_root);

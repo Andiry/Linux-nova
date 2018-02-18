@@ -815,51 +815,6 @@ static void nova_traverse_dir_inode_log(struct super_block *sb,
 		nova_traverse_inode_log(sb, pi, bm, pi->alter_log_head);
 }
 
-static unsigned int nova_check_old_entry(struct super_block *sb,
-	struct nova_inode_info_header *sih, u64 entry_addr,
-	unsigned long pgoff, unsigned int num_free,
-	u64 epoch_id, struct task_ring *ring, unsigned long base,
-	struct scan_bitmap *bm)
-{
-	struct nova_file_write_entry *entry;
-	struct nova_file_write_entry *entryc, entry_copy;
-	unsigned long old_nvmm, nvmm;
-	unsigned long index;
-	int i;
-	int ret;
-
-	entry = (struct nova_file_write_entry *)entry_addr;
-
-	if (!entry)
-		return 0;
-
-	if (metadata_csum == 0)
-		entryc = entry;
-	else {
-		entryc = &entry_copy;
-		if (!nova_verify_entry_csum(sb, entry, entryc))
-			return 0;
-	}
-
-	old_nvmm = get_nvmm(sb, sih, entryc, pgoff);
-
-	ret = nova_append_data_to_snapshot(sb, entryc, old_nvmm,
-				num_free, epoch_id);
-
-	if (ret != 0)
-		return ret;
-
-	index = pgoff - base;
-	for (i = 0; i < num_free; i++) {
-		nvmm = ring->nvmm_array[index];
-		if (nvmm)
-			set_bm(nvmm, bm, BM_4K);
-		index++;
-	}
-
-	return ret;
-}
-
 static int nova_set_ring_array(struct super_block *sb,
 	struct nova_inode_info_header *sih, struct nova_file_write_entry *entry,
 	struct nova_file_write_entry *entryc, struct task_ring *ring,
@@ -870,7 +825,6 @@ static int nova_set_ring_array(struct super_block *sb,
 	unsigned long index;
 	unsigned int num_free = 0;
 	u64 old_entry = 0;
-	u64 epoch_id = entryc->epoch_id;
 
 	start = entryc->pgoff;
 	if (start < base)
@@ -884,12 +838,6 @@ static int nova_set_ring_array(struct super_block *sb,
 		index = pgoff - base;
 		if (ring->nvmm_array[index]) {
 			if (ring->entry_array[index] != old_entry) {
-				if (old_entry)
-					nova_check_old_entry(sb, sih, old_entry,
-							old_pgoff, num_free,
-							epoch_id, ring, base,
-							bm);
-
 				old_entry = ring->entry_array[index];
 				old_pgoff = pgoff;
 				num_free = 1;
@@ -898,10 +846,6 @@ static int nova_set_ring_array(struct super_block *sb,
 			}
 		}
 	}
-
-	if (old_entry)
-		nova_check_old_entry(sb, sih, old_entry, old_pgoff,
-					num_free, epoch_id, ring, base, bm);
 
 	for (pgoff = start; pgoff < end; pgoff++) {
 		index = pgoff - base;
@@ -948,7 +892,6 @@ static void nova_ring_setattr_entry(struct super_block *sb,
 	unsigned int num_free = 0;
 	u64 old_entry = 0;
 	loff_t start, end;
-	u64 epoch_id = entry->epoch_id;
 
 	if (sih->i_size <= entry->size)
 		goto out;
@@ -976,12 +919,6 @@ static void nova_ring_setattr_entry(struct super_block *sb,
 		index = pgoff - base;
 		if (ring->nvmm_array[index]) {
 			if (ring->entry_array[index] != old_entry) {
-				if (old_entry)
-					nova_check_old_entry(sb, sih, old_entry,
-							old_pgoff, num_free,
-							epoch_id, ring, base,
-							bm);
-
 				old_entry = ring->entry_array[index];
 				old_pgoff = pgoff;
 				num_free = 1;
@@ -990,10 +927,6 @@ static void nova_ring_setattr_entry(struct super_block *sb,
 			}
 		}
 	}
-
-	if (old_entry)
-		nova_check_old_entry(sb, sih, old_entry, old_pgoff,
-					num_free, epoch_id, ring, base, bm);
 
 	for (pgoff = first_blocknr; pgoff <= last_blocknr; pgoff++) {
 		index = pgoff - base;
@@ -1321,14 +1254,10 @@ static int failure_thread_func(void *data)
 			/* FIXME: Check inode checksum */
 			if (fake_pi.i_mode && fake_pi.deleted == 0) {
 				if (fake_pi.valid == 0) {
-					ret = nova_append_inode_to_snapshot(sb,
-									pi);
-					if (ret != 0) {
-						/* Deleteable */
-						pi->deleted = 1;
-						fake_pi.deleted = 1;
-						continue;
-					}
+					/* Deleteable */
+					pi->deleted = 1;
+					fake_pi.deleted = 1;
+					continue;
 				}
 
 				nova_recover_inode_pages(sb, &sih, ring,
@@ -1459,11 +1388,6 @@ int nova_failure_recovery(struct super_block *sb)
 		set_bm(pair->journal_head >> PAGE_SHIFT, global_bm[i], BM_4K);
 	}
 
-	i = NOVA_SNAPSHOT_INO % sbi->cpus;
-	pi = nova_get_inode_by_ino(sb, NOVA_SNAPSHOT_INO);
-	/* Set snapshot info log pages */
-	nova_traverse_dir_inode_log(sb, pi, global_bm[i]);
-
 	PERSISTENT_BARRIER();
 
 	ret = allocate_resources(sb, sbi->cpus);
@@ -1491,7 +1415,6 @@ int nova_failure_recovery(struct super_block *sb)
 /* Return TRUE if we can do a normal unmount recovery */
 static bool nova_try_normal_recovery(struct super_block *sb)
 {
-	struct nova_sb_info *sbi = NOVA_SB(sb);
 	struct nova_inode *pi =  nova_get_inode_by_ino(sb, NOVA_BLOCKNODE_INO);
 	int ret;
 
@@ -1511,23 +1434,13 @@ static bool nova_try_normal_recovery(struct super_block *sb)
 		return false;
 	}
 
-	if (sbi->mount_snapshot == 0) {
-		ret = nova_restore_snapshot_table(sb, 0);
-		if (ret) {
-			nova_err(sb, "Restore snapshot table failed, fall back to failure recovery\n");
-			nova_destroy_snapshot_infos(sb);
-			return false;
-		}
-	}
-
 	return true;
 }
 
 /*
  * Recovery routine has three tasks:
- * 1. Restore snapshot table;
- * 2. Restore inuse inode list;
- * 3. Restore the NVMM allocator.
+ * 1. Restore inuse inode list;
+ * 2. Restore the NVMM allocator.
  */
 int nova_recovery(struct super_block *sb)
 {
@@ -1558,16 +1471,6 @@ int nova_recovery(struct super_block *sb)
 		ret = alloc_bm(sb, initsize);
 		if (ret)
 			goto out;
-
-		if (sbi->mount_snapshot == 0) {
-			/* Initialize the snapshot infos */
-			ret = nova_restore_snapshot_table(sb, 1);
-			if (ret) {
-				nova_dbg("Initialize snapshot infos failed\n");
-				nova_destroy_snapshot_infos(sb);
-				goto out;
-			}
-		}
 
 		sbi->s_inodes_used_count = 0;
 		ret = nova_failure_recovery(sb);

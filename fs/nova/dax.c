@@ -938,7 +938,6 @@ int nova_insert_write_vma(struct vm_area_struct *vma)
 	struct nova_inode_info *si = NOVA_I(inode);
 	struct nova_inode_info_header *sih = &si->header;
 	struct super_block *sb = inode->i_sb;
-	struct nova_sb_info *sbi = NOVA_SB(sb);
 	unsigned long flags = VM_SHARED | VM_WRITE;
 	struct vma_item *item, *curr;
 	struct rb_node **temp, *parent;
@@ -1005,7 +1004,6 @@ static int nova_remove_write_vma(struct vm_area_struct *vma)
 	struct nova_inode_info *si = NOVA_I(inode);
 	struct nova_inode_info_header *sih = &si->header;
 	struct super_block *sb = inode->i_sb;
-	struct nova_sb_info *sbi = NOVA_SB(sb);
 	struct vma_item *curr = NULL;
 	struct rb_node *temp;
 	int compVal;

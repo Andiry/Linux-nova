@@ -84,7 +84,6 @@ const char *Timingstring[TIMING_NUM] = {
 	"append_file_entry",
 	"append_link_change",
 	"append_setattr",
-	"append_snapshot_info",
 	"inplace_update_entry",
 
 	/* Tree */
@@ -141,15 +140,6 @@ const char *Timingstring[TIMING_NUM] = {
 	"=================== Rebuild ====================",
 	"rebuild_dir",
 	"rebuild_file",
-	"rebuild_snapshot_table",
-
-	/* Snapshot */
-	"=================== Snapshot ===================",
-	"create_snapshot",
-	"init_snapshot_info",
-	"delete_snapshot",
-	"append_snapshot_filedata",
-	"append_snapshot_inode",
 };
 
 u64 Timingstats[TIMING_NUM];
@@ -391,14 +381,6 @@ static inline void nova_print_link_change_entry(struct super_block *sb,
 			entry->flags, entry->ctime);
 }
 
-static inline void nova_print_snapshot_info_entry(struct super_block *sb,
-	u64 curr, struct nova_snapshot_info_entry *entry)
-{
-	nova_dbg("snapshot info entry @ 0x%llx: epoch %llu, deleted %u, timestamp %llu\n",
-			curr, entry->epoch_id, entry->deleted,
-			entry->timestamp);
-}
-
 static inline size_t nova_print_dentry(struct super_block *sb,
 	u64 curr, struct nova_dentry *entry)
 {
@@ -429,10 +411,6 @@ u64 nova_print_log_entry(struct super_block *sb, u64 curr)
 	case LINK_CHANGE:
 		nova_print_link_change_entry(sb, curr, addr);
 		curr += sizeof(struct nova_link_change_entry);
-		break;
-	case SNAPSHOT_INFO:
-		nova_print_snapshot_info_entry(sb, curr, addr);
-		curr += sizeof(struct nova_snapshot_info_entry);
 		break;
 	case FILE_WRITE:
 		nova_print_file_write_entry(sb, curr, addr);
