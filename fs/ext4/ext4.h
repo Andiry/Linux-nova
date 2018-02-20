@@ -1500,8 +1500,7 @@ struct ext4_sb_info {
 	void		*virt_addr;
 	unsigned long	journal_size;
 	/* Per-CPU journal locks */
-	spinlock_t	*journal_locks;
-	struct journal_ptr_pair *journals;
+	struct mutex	*journal_mutexes;
 	int		cpus;
 	int		dax_journal;
 

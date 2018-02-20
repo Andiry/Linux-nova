@@ -953,6 +953,8 @@ static void ext4_put_super(struct super_block *sb)
 	if (sbi->s_chksum_driver)
 		crypto_free_shash(sbi->s_chksum_driver);
 	kfree(sbi->s_blockgroup_lock);
+	if (sbi->dax_journal)
+		kfree(sbi->journal_mutexes);
 	fs_put_dax(sbi->s_daxdev);
 	kfree(sbi);
 }
@@ -4406,6 +4408,8 @@ failed_mount:
 out_fail:
 	sb->s_fs_info = NULL;
 	kfree(sbi->s_blockgroup_lock);
+	if (sbi->dax_journal)
+		kfree(sbi->journal_mutexes);
 out_free_base:
 	kfree(sbi);
 	kfree(orig_data);
@@ -4503,6 +4507,7 @@ static int ext4_init_dax_journals(struct super_block *sb)
 	int i;
 
 	for (i = 0; i < sbi->cpus; i++) {
+		mutex_init(&sbi->journal_mutexes[i]);
 		pair = ext4_get_dax_journal_pointers(sb, i);
 		addr_start = i * per_journal_size;
 		addr_end = (i + 1) * per_journal_size;
@@ -4546,7 +4551,10 @@ static int ext4_get_nvmm_info(struct super_block *sb,
 	sbi->virt_addr = virt_addr;
 	sbi->dax_journal_dev = dax_dev;
 	sbi->cpus = num_online_cpus();
-	sbi->dax_journal = 1;
+	sbi->journal_mutexes = kcalloc(sbi->cpus, sizeof(struct mutex),
+			GFP_KERNEL);
+	if (!sbi->journal_mutexes)
+		return -ENOMEM;
 
 	printk("%s: dev %s, virt_addr 0x%lx, size %ld, %d cpus\n",
 		__func__, bdev->bd_disk->disk_name,
@@ -4554,6 +4562,7 @@ static int ext4_get_nvmm_info(struct super_block *sb,
 
 	ext4_init_dax_journals(sb);
 
+	sbi->dax_journal = 1;
 	return 0;
 }
 
