@@ -1500,6 +1500,29 @@ struct ext4_sb_info {
 
 };
 
+struct journal_ptr_pair {
+	__le64 journal_head;
+	__le64 journal_tail;
+};
+
+#define CACHELINE_SIZE	(64)
+
+static inline
+struct journal_ptr_pair *ext4_get_dax_journal_pointers(struct super_block *sb,
+	int cpu)
+{
+	struct ext4_sb_info *sbi = sb->s_fs_info;
+	char *addr;
+
+	if (sbi->dax_journal == 0 || cpu >= sbi->cpus)
+		BUG();
+
+	addr = sbi->virt_addr;
+
+	/* Block 0 */
+	return (struct journal_ptr_pair *)(addr + cpu * CACHELINE_SIZE);
+}
+
 static inline struct ext4_sb_info *EXT4_SB(struct super_block *sb)
 {
 	return sb->s_fs_info;
