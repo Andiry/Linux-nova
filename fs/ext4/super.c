@@ -39,6 +39,7 @@
 #include <linux/log2.h>
 #include <linux/crc16.h>
 #include <linux/dax.h>
+#include <linux/pfn_t.h>
 #include <linux/cleancache.h>
 #include <linux/uaccess.h>
 #include <linux/iversion.h>
@@ -4496,11 +4497,11 @@ static journal_t *ext4_get_journal(struct super_block *sb,
 static int ext4_get_nvmm_info(struct super_block *sb,
 	struct block_device *bdev)
 {
+	struct ext4_sb_info *sbi = EXT4_SB(sb);
 	void *virt_addr = NULL;
 	pfn_t __pfn_t;
 	long size;
 	struct dax_device *dax_dev;
-	int ret;
 
 	dax_dev = fs_dax_get_by_host(bdev->bd_disk->disk_name);
 	if (!dax_dev) {
@@ -4518,6 +4519,13 @@ static int ext4_get_nvmm_info(struct super_block *sb,
 	printk("%s: dev %s, virt_addr 0x%lx, size %ld\n",
 		__func__, bdev->bd_disk->disk_name,
 		(unsigned long)virt_addr, size);
+
+	sbi->phys_addr = pfn_t_to_pfn(__pfn_t) << PAGE_SHIFT;
+	sbi->journal_size = size;
+	sbi->virt_addr = virt_addr;
+	sbi->dax_journal_dev = dax_dev;
+	sbi->cpus = num_online_cpus();
+	sbi->dax_journal = 1;
 
 	return 0;
 }

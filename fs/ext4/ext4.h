@@ -1487,6 +1487,17 @@ struct ext4_sb_info {
 	/* Barrier between changing inodes' journal flags and writepages ops. */
 	struct percpu_rw_semaphore s_journal_flag_rwsem;
 	struct dax_device *s_daxdev;
+
+	/* DAX journaling */
+	struct dax_device	*dax_journal_dev;
+	phys_addr_t	phys_addr;
+	void		*virt_addr;
+	unsigned long	journal_size;
+	/* Per-CPU journal locks */
+	spinlock_t	*journal_locks;
+	int		cpus;
+	int		dax_journal;
+
 };
 
 static inline struct ext4_sb_info *EXT4_SB(struct super_block *sb)
