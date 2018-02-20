@@ -1317,6 +1317,12 @@ struct ext4_super_block {
 /* Number of quota types we support */
 #define EXT4_MAXQUOTAS 3
 
+struct journal_ptr_pair {
+	__le64 journal_head;
+	__le64 journal_tail;
+	__le64 journal_end;
+};
+
 /*
  * fourth extended-fs super-block data in memory
  */
@@ -1495,17 +1501,13 @@ struct ext4_sb_info {
 	unsigned long	journal_size;
 	/* Per-CPU journal locks */
 	spinlock_t	*journal_locks;
+	struct journal_ptr_pair *journals;
 	int		cpus;
 	int		dax_journal;
 
 };
 
-struct journal_ptr_pair {
-	__le64 journal_head;
-	__le64 journal_tail;
-};
-
-#define CACHELINE_SIZE	(64)
+#define	CACHELINE_SIZE	(64)
 
 static inline
 struct journal_ptr_pair *ext4_get_dax_journal_pointers(struct super_block *sb,

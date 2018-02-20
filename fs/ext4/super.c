@@ -4494,6 +4494,31 @@ static journal_t *ext4_get_journal(struct super_block *sb,
 	return journal;
 }
 
+static int ext4_init_dax_journals(struct super_block *sb)
+{
+	struct ext4_sb_info *sbi = EXT4_SB(sb);
+	struct journal_ptr_pair *pair;
+	unsigned long per_journal_size = sbi->journal_size / sbi->cpus;
+	unsigned long addr_start, addr_end;
+	int i;
+
+	for (i = 0; i < sbi->cpus; i++) {
+		pair = ext4_get_dax_journal_pointers(sb, i);
+		addr_start = i * per_journal_size;
+		addr_end = (i + 1) * per_journal_size;
+
+		/* First block for pointers */
+		if (i == 0)
+			addr_start += PAGE_SIZE;
+
+		pair->journal_head = pair->journal_tail = addr_start;
+		pair->journal_end = addr_end;
+	}
+
+	/* FIXME: persist pointers */
+	return 0;
+}
+
 static int ext4_get_nvmm_info(struct super_block *sb,
 	struct block_device *bdev)
 {
@@ -4516,16 +4541,18 @@ static int ext4_get_nvmm_info(struct super_block *sb,
 		return -EINVAL;
 	}
 
-	printk("%s: dev %s, virt_addr 0x%lx, size %ld\n",
-		__func__, bdev->bd_disk->disk_name,
-		(unsigned long)virt_addr, size);
-
 	sbi->phys_addr = pfn_t_to_pfn(__pfn_t) << PAGE_SHIFT;
 	sbi->journal_size = size;
 	sbi->virt_addr = virt_addr;
 	sbi->dax_journal_dev = dax_dev;
 	sbi->cpus = num_online_cpus();
 	sbi->dax_journal = 1;
+
+	printk("%s: dev %s, virt_addr 0x%lx, size %ld, %d cpus\n",
+		__func__, bdev->bd_disk->disk_name,
+		(unsigned long)virt_addr, size, sbi->cpus);
+
+	ext4_init_dax_journals(sb);
 
 	return 0;
 }
