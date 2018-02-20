@@ -4481,6 +4481,7 @@ static journal_t *ext4_get_journal(struct super_block *sb,
 	if (!journal_inode)
 		return NULL;
 
+	printk("%s: journal inum %u\n", __func__, journal_inum);
 	journal = jbd2_journal_init_inode(journal_inode);
 	if (!journal) {
 		ext4_msg(sb, KERN_ERR, "Could not load journal inode");
@@ -4490,6 +4491,35 @@ static journal_t *ext4_get_journal(struct super_block *sb,
 	journal->j_private = sb;
 	ext4_init_journal_params(sb, journal);
 	return journal;
+}
+
+static int ext4_get_nvmm_info(struct super_block *sb,
+	struct block_device *bdev)
+{
+	void *virt_addr = NULL;
+	pfn_t __pfn_t;
+	long size;
+	struct dax_device *dax_dev;
+	int ret;
+
+	dax_dev = fs_dax_get_by_host(bdev->bd_disk->disk_name);
+	if (!dax_dev) {
+		printk("%s: Couldn't retrieve DAX device.\n", __func__);
+		return -EINVAL;
+	}
+
+	size = dax_direct_access(dax_dev, 0, LONG_MAX / PAGE_SIZE,
+				 &virt_addr, &__pfn_t) * PAGE_SIZE;
+	if (size <= 0) {
+		printk("%s: direct_access failed\n", __func__);
+		return -EINVAL;
+	}
+
+	printk("%s: dev %s, virt_addr 0x%lx, size %ld\n",
+		__func__, bdev->bd_disk->disk_name,
+		(unsigned long)virt_addr, size);
+
+	return 0;
 }
 
 static journal_t *ext4_get_dev_journal(struct super_block *sb,
@@ -4510,6 +4540,9 @@ static journal_t *ext4_get_dev_journal(struct super_block *sb,
 	bdev = ext4_blkdev_get(j_dev, sb);
 	if (bdev == NULL)
 		return NULL;
+
+	printk("%s: journal dev %s\n", __func__, bdev->bd_disk->disk_name);
+	ext4_get_nvmm_info(sb, bdev);
 
 	blocksize = sb->s_blocksize;
 	hblock = bdev_logical_block_size(bdev);
