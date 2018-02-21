@@ -4533,6 +4533,10 @@ static int ext4_get_nvmm_info(struct super_block *sb,
 	long size;
 	struct dax_device *dax_dev;
 
+	/* Only support DAX */
+	if ((sbi->s_mount_opt & EXT4_MOUNT_DAX) == 0)
+		return 0;
+
 	dax_dev = fs_dax_get_by_host(bdev->bd_disk->disk_name);
 	if (!dax_dev) {
 		printk("%s: Couldn't retrieve DAX device.\n", __func__);
@@ -4560,9 +4564,9 @@ static int ext4_get_nvmm_info(struct super_block *sb,
 		__func__, bdev->bd_disk->disk_name,
 		(unsigned long)virt_addr, size, sbi->cpus);
 
+	sbi->dax_journal = 1;
 	ext4_init_dax_journals(sb);
 
-	sbi->dax_journal = 1;
 	return 0;
 }
 
