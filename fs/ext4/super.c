@@ -953,8 +953,6 @@ static void ext4_put_super(struct super_block *sb)
 	if (sbi->s_chksum_driver)
 		crypto_free_shash(sbi->s_chksum_driver);
 	kfree(sbi->s_blockgroup_lock);
-	if (sbi->dax_journal)
-		kfree(sbi->journal_mutexes);
 	fs_put_dax(sbi->s_daxdev);
 	kfree(sbi);
 }
@@ -4408,8 +4406,6 @@ failed_mount:
 out_fail:
 	sb->s_fs_info = NULL;
 	kfree(sbi->s_blockgroup_lock);
-	if (sbi->dax_journal)
-		kfree(sbi->journal_mutexes);
 out_free_base:
 	kfree(sbi);
 	kfree(orig_data);
@@ -4498,27 +4494,18 @@ static journal_t *ext4_get_journal(struct super_block *sb,
 	return journal;
 }
 
-static int ext4_init_dax_journals(struct super_block *sb)
+static int ext4_init_dax_journal(struct super_block *sb)
 {
 	struct ext4_sb_info *sbi = EXT4_SB(sb);
 	struct journal_ptr_pair *pair;
-	unsigned long per_journal_size = sbi->journal_size / sbi->cpus;
-	unsigned long addr_start, addr_end;
-	int i;
 
-	for (i = 0; i < sbi->cpus; i++) {
-		mutex_init(&sbi->journal_mutexes[i]);
-		pair = ext4_get_dax_journal_pointers(sb, i);
-		addr_start = i * per_journal_size;
-		addr_end = (i + 1) * per_journal_size;
+	mutex_init(&sbi->journal_mutex);
+	pair = ext4_get_dax_journal_pointer(sb);
 
-		/* First block for pointers */
-		if (i == 0)
-			addr_start += PAGE_SIZE;
-
-		pair->journal_head = pair->journal_tail = addr_start;
-		pair->journal_end = addr_end;
-	}
+	/* First block for pointers */
+	pair->journal_head = pair->journal_tail = PAGE_SIZE;
+	pair->journal_end = sbi->journal_size;
+	sbi->journal_size -= PAGE_SIZE;
 
 	/* FIXME: persist pointers */
 	return 0;
@@ -4554,18 +4541,13 @@ static int ext4_get_nvmm_info(struct super_block *sb,
 	sbi->journal_size = size;
 	sbi->virt_addr = virt_addr;
 	sbi->dax_journal_dev = dax_dev;
-	sbi->cpus = num_online_cpus();
-	sbi->journal_mutexes = kcalloc(sbi->cpus, sizeof(struct mutex),
-			GFP_KERNEL);
-	if (!sbi->journal_mutexes)
-		return -ENOMEM;
 
-	printk("%s: dev %s, virt_addr 0x%lx, size %ld, %d cpus\n",
+	printk("%s: dev %s, virt_addr 0x%lx, size %ld\n",
 		__func__, bdev->bd_disk->disk_name,
-		(unsigned long)virt_addr, size, sbi->cpus);
+		(unsigned long)virt_addr, size);
 
 	sbi->dax_journal = 1;
-	ext4_init_dax_journals(sb);
+	ext4_init_dax_journal(sb);
 
 	return 0;
 }

@@ -1499,9 +1499,10 @@ struct ext4_sb_info {
 	phys_addr_t	phys_addr;
 	void		*virt_addr;
 	unsigned long	journal_size;
+	struct mutex	journal_mutex;
 	/* Per-CPU journal locks */
-	struct mutex	*journal_mutexes;
-	int		cpus;
+//	struct mutex	*journal_mutexes;
+//	int		cpus;
 	int		dax_journal;
 
 };
@@ -1509,19 +1510,15 @@ struct ext4_sb_info {
 #define	CACHELINE_SIZE	(64)
 
 static inline
-struct journal_ptr_pair *ext4_get_dax_journal_pointers(struct super_block *sb,
-	int cpu)
+struct journal_ptr_pair *ext4_get_dax_journal_pointer(struct super_block *sb)
 {
 	struct ext4_sb_info *sbi = sb->s_fs_info;
-	char *addr;
 
-	if (sbi->dax_journal == 0 || cpu >= sbi->cpus)
+	if (sbi->dax_journal == 0)
 		BUG();
 
-	addr = sbi->virt_addr;
-
 	/* Block 0 */
-	return (struct journal_ptr_pair *)(addr + cpu * CACHELINE_SIZE);
+	return (struct journal_ptr_pair *)(sbi->virt_addr);
 }
 
 static inline struct ext4_sb_info *EXT4_SB(struct super_block *sb)
