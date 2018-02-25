@@ -54,6 +54,7 @@
 #include "acl.h"
 #include "mballoc.h"
 #include "fsmap.h"
+#include "journal.h"
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/ext4.h>
@@ -4504,8 +4505,8 @@ static int ext4_init_dax_journal(struct super_block *sb)
 
 	/* First block for pointers */
 	pair->journal_head = pair->journal_tail = PAGE_SIZE;
-	pair->journal_end = sbi->journal_size;
-	sbi->journal_size -= PAGE_SIZE;
+	pair->journal_end = sbi->jsize;
+	sbi->jsize -= PAGE_SIZE;
 
 	/* FIXME: persist pointers */
 	return 0;
@@ -4538,7 +4539,7 @@ static int ext4_get_nvmm_info(struct super_block *sb,
 	}
 
 	sbi->phys_addr = pfn_t_to_pfn(__pfn_t) << PAGE_SHIFT;
-	sbi->journal_size = size;
+	sbi->jsize = size;
 	sbi->virt_addr = virt_addr;
 	sbi->dax_journal_dev = dax_dev;
 

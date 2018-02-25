@@ -1498,8 +1498,13 @@ struct ext4_sb_info {
 	struct dax_device	*dax_journal_dev;
 	phys_addr_t	phys_addr;
 	void		*virt_addr;
-	unsigned long	journal_size;
+	unsigned long	jsize;
+	void		*journal_base_addr;
+	uint32_t	next_transaction_id;
 	struct mutex	journal_mutex;
+	struct task_struct	*log_cleaner_thread;
+	wait_queue_head_t	log_cleaner_wait;
+	bool		redo_log;
 	/* Per-CPU journal locks */
 //	struct mutex	*journal_mutexes;
 //	int		cpus;
