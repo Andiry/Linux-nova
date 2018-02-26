@@ -451,6 +451,9 @@ handle_t *jbd2__journal_start(journal_t *journal, int nblocks, int rsv_blocks,
 				handle->h_transaction->t_tid, type,
 				line_no, nblocks);
 
+	if (journal->dax_journal)
+		handle->dax_journal = 1;
+
 	return handle;
 }
 EXPORT_SYMBOL(jbd2__journal_start);

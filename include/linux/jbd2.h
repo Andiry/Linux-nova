@@ -507,6 +507,7 @@ struct jbd2_journal_handle
 	unsigned int		h_requested_credits;
 
 	unsigned int		saved_alloc_context;
+	unsigned int	dax_journal;
 };
 
 
@@ -1151,6 +1152,7 @@ struct journal_s
 	 */
 	struct lockdep_map	j_trans_commit_map;
 #endif
+	unsigned int dax_journal;
 };
 
 #define jbd2_might_wait_for_commit(j) \

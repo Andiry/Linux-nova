@@ -4510,7 +4510,7 @@ static int ext4_init_dax_journal(struct super_block *sb)
 }
 
 static int ext4_get_nvmm_info(struct super_block *sb,
-	struct block_device *bdev)
+	journal_t *journal, struct block_device *bdev)
 {
 	struct ext4_sb_info *sbi = EXT4_SB(sb);
 	void *virt_addr = NULL;
@@ -4550,6 +4550,7 @@ static int ext4_get_nvmm_info(struct super_block *sb,
 		return ret;
 
 	sbi->dax_journal = 1;
+	journal->dax_journal = 1;
 	return 0;
 }
 
@@ -4643,7 +4644,7 @@ static journal_t *ext4_get_dev_journal(struct super_block *sb,
 	ext4_init_journal_params(sb, journal);
 
 	/* Try DAX journal */
-	ext4_get_nvmm_info(sb, bdev);
+	ext4_get_nvmm_info(sb, journal, bdev);
 	return journal;
 
 out_journal:

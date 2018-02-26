@@ -277,7 +277,7 @@ static inline int ext4_handle_valid(handle_t *handle)
 
 static inline void ext4_handle_sync(handle_t *handle)
 {
-	if (ext4_handle_valid(handle))
+	if (ext4_handle_valid(handle) && handle->dax_journal == 0)
 		handle->h_sync = 1;
 }
 
@@ -290,7 +290,7 @@ static inline int ext4_handle_is_aborted(handle_t *handle)
 
 static inline int ext4_handle_has_enough_credits(handle_t *handle, int needed)
 {
-	if (ext4_handle_valid(handle) && handle->h_buffer_credits < needed)
+	if (ext4_handle_valid(handle) && handle->dax_journal == 0 && handle->h_buffer_credits < needed)
 		return 0;
 	return 1;
 }
@@ -334,14 +334,14 @@ static inline handle_t *ext4_journal_current_handle(void)
 
 static inline int ext4_journal_extend(handle_t *handle, int nblocks)
 {
-	if (ext4_handle_valid(handle))
+	if (ext4_handle_valid(handle) && handle->dax_journal == 0)
 		return jbd2_journal_extend(handle, nblocks);
 	return 0;
 }
 
 static inline int ext4_journal_restart(handle_t *handle, int nblocks)
 {
-	if (ext4_handle_valid(handle))
+	if (ext4_handle_valid(handle) && handle->dax_journal == 0)
 		return jbd2_journal_restart(handle, nblocks);
 	return 0;
 }
@@ -363,7 +363,7 @@ static inline int ext4_journal_force_commit(journal_t *journal)
 static inline int ext4_jbd2_inode_add_write(handle_t *handle,
 					    struct inode *inode)
 {
-	if (ext4_handle_valid(handle))
+	if (ext4_handle_valid(handle) && handle->dax_journal == 0)
 		return jbd2_journal_inode_add_write(handle,
 						    EXT4_I(inode)->jinode);
 	return 0;
@@ -372,7 +372,7 @@ static inline int ext4_jbd2_inode_add_write(handle_t *handle,
 static inline int ext4_jbd2_inode_add_wait(handle_t *handle,
 					   struct inode *inode)
 {
-	if (ext4_handle_valid(handle))
+	if (ext4_handle_valid(handle) && handle->dax_journal == 0)
 		return jbd2_journal_inode_add_wait(handle,
 						   EXT4_I(inode)->jinode);
 	return 0;
@@ -384,7 +384,7 @@ static inline void ext4_update_inode_fsync_trans(handle_t *handle,
 {
 	struct ext4_inode_info *ei = EXT4_I(inode);
 
-	if (ext4_handle_valid(handle)) {
+	if (ext4_handle_valid(handle) && handle->dax_journal == 0) {
 		ei->i_sync_tid = handle->h_transaction->t_tid;
 		if (datasync)
 			ei->i_datasync_tid = handle->h_transaction->t_tid;

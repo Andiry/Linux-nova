@@ -165,7 +165,7 @@ int __ext4_journal_get_write_access(const char *where, unsigned int line,
 
 	might_sleep();
 
-	if (ext4_handle_valid(handle)) {
+	if (ext4_handle_valid(handle) && handle->dax_journal == 0) {
 		struct super_block *sb;
 
 		sb = handle->h_transaction->t_journal->j_private;
@@ -253,7 +253,7 @@ int __ext4_journal_get_create_access(const char *where, unsigned int line,
 {
 	int err = 0;
 
-	if (ext4_handle_valid(handle)) {
+	if (ext4_handle_valid(handle) && handle->dax_journal == 0) {
 		err = jbd2_journal_get_create_access(handle, bh);
 		if (err)
 			ext4_journal_abort_handle(where, line, __func__,
@@ -272,7 +272,7 @@ int __ext4_handle_dirty_metadata(const char *where, unsigned int line,
 
 	set_buffer_meta(bh);
 	set_buffer_prio(bh);
-	if (ext4_handle_valid(handle)) {
+	if (ext4_handle_valid(handle) && handle->dax_journal == 0) {
 		err = jbd2_journal_dirty_metadata(handle, bh);
 		/* Errors can only happen due to aborted journal or a nasty bug */
 		if (!is_handle_aborted(handle) && WARN_ON_ONCE(err)) {
@@ -328,7 +328,7 @@ int __ext4_handle_dirty_super(const char *where, unsigned int line,
 	int err = 0;
 
 	ext4_superblock_csum_set(sb);
-	if (ext4_handle_valid(handle)) {
+	if (ext4_handle_valid(handle) && handle->dax_journal == 0) {
 		err = jbd2_journal_dirty_metadata(handle, bh);
 		if (err)
 			ext4_journal_abort_handle(where, line, __func__,
