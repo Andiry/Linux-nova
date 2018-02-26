@@ -891,6 +891,8 @@ static void ext4_put_super(struct super_block *sb)
 	ext4_release_system_zone(sb);
 	ext4_mb_release(sb);
 	ext4_ext_release(sb);
+	if (sbi->dax_journal)
+		dax_journal_destroy();
 
 	if (!sb_rdonly(sb) && !aborted) {
 		ext4_clear_feature_journal_needs_recovery(sb);
@@ -4407,6 +4409,8 @@ failed_mount:
 out_fail:
 	sb->s_fs_info = NULL;
 	kfree(sbi->s_blockgroup_lock);
+	if (sbi->dax_journal)
+		dax_journal_destroy();
 out_free_base:
 	kfree(sbi);
 	kfree(orig_data);
@@ -4498,18 +4502,11 @@ static journal_t *ext4_get_journal(struct super_block *sb,
 static int ext4_init_dax_journal(struct super_block *sb)
 {
 	struct ext4_sb_info *sbi = EXT4_SB(sb);
-	struct journal_ptr_pair *pair;
-
-	mutex_init(&sbi->journal_mutex);
-	pair = ext4_get_dax_journal_pointer(sb);
 
 	/* First block for pointers */
-	pair->journal_head = pair->journal_tail = PAGE_SIZE;
-	pair->journal_end = sbi->jsize;
 	sbi->jsize -= PAGE_SIZE;
 
-	/* FIXME: persist pointers */
-	return 0;
+	return dax_journal_hard_init(sb, PAGE_SIZE, sbi->jsize);
 }
 
 static int ext4_get_nvmm_info(struct super_block *sb,
@@ -4520,6 +4517,7 @@ static int ext4_get_nvmm_info(struct super_block *sb,
 	pfn_t __pfn_t;
 	long size;
 	struct dax_device *dax_dev;
+	int ret;
 
 	/* Only support DAX */
 	if ((sbi->s_mount_opt & EXT4_MOUNT_DAX) == 0)
@@ -4547,9 +4545,11 @@ static int ext4_get_nvmm_info(struct super_block *sb,
 		__func__, bdev->bd_disk->disk_name,
 		(unsigned long)virt_addr, size);
 
-	sbi->dax_journal = 1;
-	ext4_init_dax_journal(sb);
+	ret = ext4_init_dax_journal(sb);
+	if (ret < 0)
+		return ret;
 
+	sbi->dax_journal = 1;
 	return 0;
 }
 
@@ -4573,7 +4573,6 @@ static journal_t *ext4_get_dev_journal(struct super_block *sb,
 		return NULL;
 
 	printk("%s: journal dev %s\n", __func__, bdev->bd_disk->disk_name);
-	ext4_get_nvmm_info(sb, bdev);
 
 	blocksize = sb->s_blocksize;
 	hblock = bdev_logical_block_size(bdev);
@@ -4642,6 +4641,9 @@ static journal_t *ext4_get_dev_journal(struct super_block *sb,
 	}
 	EXT4_SB(sb)->journal_bdev = bdev;
 	ext4_init_journal_params(sb, journal);
+
+	/* Try DAX journal */
+	ext4_get_nvmm_info(sb, bdev);
 	return journal;
 
 out_journal:
