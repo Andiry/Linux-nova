@@ -707,6 +707,7 @@ again:
 	sih->trans_id++;
 	NOVA_STATS_ADD(dax_new_blocks, 1);
 
+	*new = true;
 //	set_buffer_new(bh);
 out:
 	if (ret < 0) {
