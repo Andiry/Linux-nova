@@ -314,6 +314,7 @@ static ssize_t nova_dax_read_iter(struct kiocb *iocb, struct iov_iter *to)
 		return 0;
 
 	NOVA_START_TIMING(read_iter_t, read_iter_time);
+
 	inode_lock_shared(inode);
 	ret = dax_iomap_rw(iocb, to, &nova_iomap_ops);
 	inode_unlock_shared(inode);
@@ -731,15 +732,6 @@ static ssize_t nova_dax_file_write(struct file *filp, const char __user *buf,
 		return nova_cow_file_write(filp, buf, len, ppos);
 }
 
-static ssize_t do_nova_dax_file_write(struct file *filp, const char __user *buf,
-				   size_t len, loff_t *ppos)
-{
-	if (inplace_data_updates)
-		return do_nova_inplace_file_write(filp, buf, len, ppos);
-	else
-		return do_nova_cow_file_write(filp, buf, len, ppos);
-}
-
 
 static int nova_dax_file_mmap(struct file *file, struct vm_area_struct *vma)
 {
@@ -781,87 +773,6 @@ const struct file_operations nova_dax_file_operations = {
 #endif
 };
 
-
-static ssize_t nova_wrap_rw_iter(struct kiocb *iocb, struct iov_iter *iter)
-{
-	struct file *filp = iocb->ki_filp;
-	struct inode *inode = filp->f_mapping->host;
-	struct nova_inode_info *si = NOVA_I(inode);
-	struct nova_inode_info_header *sih = &si->header;
-	ssize_t ret = -EIO;
-	ssize_t written = 0;
-	unsigned long seg;
-	unsigned long nr_segs = iter->nr_segs;
-	const struct iovec *iv = iter->iov;
-
-	nova_dbgv("%s %s: %lu segs\n", __func__,
-			iov_iter_rw(iter) == READ ? "read" : "write",
-			nr_segs);
-
-	if (iov_iter_rw(iter) == WRITE)  {
-		sb_start_write(inode->i_sb);
-		inode_lock(inode);
-		sih_lock(sih);
-	} else {
-		inode_lock_shared(inode);
-		sih_lock_shared(sih);
-	}
-		
-	iv = iter->iov;
-	for (seg = 0; seg < nr_segs; seg++) {
-		if (iov_iter_rw(iter) == READ) {
-			ret = do_dax_mapping_read(filp, iv->iov_base,
-						  iv->iov_len, &iocb->ki_pos);
-		} else if (iov_iter_rw(iter) == WRITE) {
-			ret = do_nova_dax_file_write(filp, iv->iov_base,
-						     iv->iov_len, &iocb->ki_pos);
-		} else {
-			BUG();
-		}
-		if (ret < 0)
-			goto err;
-
-		if (iter->count > iv->iov_len)
-			iter->count -= iv->iov_len;
-		else
-			iter->count = 0;
-
-		written += ret;
-		iter->nr_segs--;
-		iv++;
-	}
-	ret = written;
-err:
-	if (iov_iter_rw(iter) == WRITE)  {
-		sih_unlock(sih);
-		inode_unlock(inode);
-		sb_end_write(inode->i_sb);
-	} else {
-		sih_unlock_shared(sih);
-		inode_unlock_shared(inode);
-	}
-
-	return ret;
-}
-
-
-/* Wrap read/write_iter for DP, CoW and WP */
-const struct file_operations nova_wrap_file_operations = {
-	.llseek			= nova_llseek,
-	.read			= nova_dax_file_read,
-	.write			= nova_dax_file_write,
-	.read_iter		= nova_wrap_rw_iter,
-	.write_iter		= nova_wrap_rw_iter,
-	.mmap			= nova_dax_file_mmap,
-	.open			= nova_open,
-	.fsync			= nova_fsync,
-	.flush			= nova_flush,
-	.unlocked_ioctl		= nova_ioctl,
-	.fallocate		= nova_fallocate,
-#ifdef CONFIG_COMPAT
-	.compat_ioctl		= nova_compat_ioctl,
-#endif
-};
 
 const struct inode_operations nova_file_inode_operations = {
 	.setattr	= nova_notify_change,

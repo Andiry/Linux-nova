@@ -567,7 +567,6 @@ struct nova_dentry *nova_find_dentry(struct super_block *sb,
 /* file.c */
 extern const struct inode_operations nova_file_inode_operations;
 extern const struct file_operations nova_dax_file_operations;
-extern const struct file_operations nova_wrap_file_operations;
 
 
 /* gc.c */
