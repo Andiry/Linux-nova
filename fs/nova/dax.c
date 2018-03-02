@@ -338,15 +338,12 @@ int nova_commit_writes_to_log(struct super_block *sb, struct nova_inode *pi,
 
 	update.tail = 0;
 
-	sih_lock(sih);
-
 	list_for_each_entry(entry_item, head, list) {
 		ret = nova_append_file_write_entry(sb, pi, inode,
 					entry_item, &update);
 		if (ret) {
 			nova_dbg("%s: append inode entry failed\n", __func__);
-			ret = -ENOSPC;
-			goto out;
+			return -ENOSPC;
 		}
 
 		if (begin_tail == 0)
@@ -357,7 +354,7 @@ int nova_commit_writes_to_log(struct super_block *sb, struct nova_inode *pi,
 	ret = nova_reassign_file_tree(sb, sih, begin_tail, update.tail);
 	if (ret < 0) {
 		/* FIXME: Need to rebuild the tree */
-		goto out;
+		return ret;
 	}
 
 	data_bits = blk_type_to_shift[sih->i_blk_type];
@@ -369,10 +366,8 @@ int nova_commit_writes_to_log(struct super_block *sb, struct nova_inode *pi,
 	NOVA_STATS_ADD(inplace_new_blocks, 1);
 
 	sih->trans_id++;
-out:
-	sih_unlock(sih);
 
-	if (ret == 0 && free) {
+	if (free) {
 		list_for_each_entry_safe(entry_item, temp, head, list)
 			nova_free_file_write_item(entry_item);
 	}

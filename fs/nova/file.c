@@ -167,21 +167,19 @@ static long nova_fallocate(struct file *file, int mode, loff_t offset,
 	struct nova_inode_info_header *sih = &si->header;
 	struct nova_inode *pi;
 	struct nova_file_write_entry *entry;
-	struct nova_file_write_item entry_item;
+	struct nova_file_write_item *entry_item;
+	struct list_head item_head;
 	struct nova_inode_update update;
 	unsigned long start_blk, num_blocks, ent_blks = 0;
 	unsigned long total_blocks = 0;
 	unsigned long blocknr = 0;
 	unsigned long blockoff;
-	unsigned int data_bits;
 	loff_t new_size;
 	long ret = 0;
 	int inplace = 0;
 	int blocksize_mask;
 	int allocated = 0;
-	bool update_log = false;
 	timing_t fallocate_time;
-	u64 begin_tail = 0;
 	u64 epoch_id;
 	u32 time;
 
@@ -197,6 +195,7 @@ static long nova_fallocate(struct file *file, int mode, loff_t offset,
 	if (S_ISDIR(inode->i_mode))
 		return -ENODEV;
 
+	INIT_LIST_HEAD(&item_head);
 	new_size = len + offset;
 	if (!(mode & FALLOC_FL_KEEP_SIZE) && new_size > inode->i_size) {
 		ret = inode_newsize_ok(inode, new_size);
@@ -258,24 +257,18 @@ static long nova_fallocate(struct file *file, int mode, loff_t offset,
 			goto out;
 		}
 
-		/* Handle hole fill write */
-		nova_init_file_write_item(sb, sih, &entry_item, epoch_id,
-					start_blk, allocated, blocknr,
-					time, new_size);
-
-		ret = nova_append_file_write_entry(sb, pi, inode,
-					&entry_item, &update);
-		if (ret) {
-			nova_dbg("%s: append inode entry failed\n", __func__);
-			ret = -ENOSPC;
+		entry_item = nova_alloc_file_write_item(sb);
+		if (!entry_item) {
+			ret = -ENOMEM;
 			goto out;
 		}
 
-		entry = nova_get_block(sb, update.curr_entry);
+		/* Handle hole fill write */
+		nova_init_file_write_item(sb, sih, entry_item, epoch_id,
+					start_blk, allocated, blocknr,
+					time, new_size);
 
-		update_log = true;
-		if (begin_tail == 0)
-			begin_tail = update.curr_entry;
+		list_add_tail(&entry_item->list, &item_head);
 
 		total_blocks += allocated;
 next:
@@ -283,24 +276,12 @@ next:
 		start_blk += allocated;
 	}
 
-	data_bits = blk_type_to_shift[sih->i_blk_type];
-	sih->i_blocks += (total_blocks << (data_bits - sb->s_blocksize_bits));
-
-	inode->i_blocks = sih->i_blocks;
-
-	if (update_log) {
-		sih->log_tail = update.tail;
-
-		nova_update_tail(pi, update.tail);
-
-		/* Update file tree */
-		ret = nova_reassign_file_tree(sb, sih, begin_tail, update.tail);
-		if (ret)
-			goto out;
-
+	ret = nova_commit_writes_to_log(sb, pi, inode,
+					&item_head, total_blocks, 1);
+	if (ret < 0) {
+		nova_err(sb, "commit to log failed\n");
+		goto out;
 	}
-
-	nova_dbgv("blocks: %lu, %lu\n", inode->i_blocks, sih->i_blocks);
 
 	if (ret || (mode & FALLOC_FL_KEEP_SIZE)) {
 		pi->i_flags |= cpu_to_le32(NOVA_EOFBLOCKS_FL);
@@ -313,11 +294,9 @@ next:
 
 	nova_persist_inode(pi);
 
-	sih->trans_id++;
 out:
 	if (ret < 0)
-		nova_cleanup_incomplete_write(sb, sih, blocknr, allocated,
-						begin_tail, update.tail);
+		nova_cleanup_incomplete_writes(sb, sih, &item_head, 1);
 
 	sih_unlock(sih);
 	inode_unlock(inode);
@@ -539,7 +518,8 @@ static ssize_t do_nova_cow_file_write(struct file *filp,
 	struct nova_inode_info_header *sih = &si->header;
 	struct super_block *sb = inode->i_sb;
 	struct nova_inode *pi;
-	struct nova_file_write_item entry_item;
+	struct nova_file_write_item *entry_item;
+	struct list_head item_head;
 	struct nova_inode_update update;
 	ssize_t	    written = 0;
 	loff_t pos;
@@ -547,7 +527,6 @@ static ssize_t do_nova_cow_file_write(struct file *filp,
 	unsigned long start_blk, num_blocks;
 	unsigned long total_blocks;
 	unsigned long blocknr = 0;
-	unsigned int data_bits;
 	int allocated = 0;
 	void *kmem;
 	u64 file_size;
@@ -556,7 +535,6 @@ static ssize_t do_nova_cow_file_write(struct file *filp,
 	timing_t cow_write_time, memcpy_time;
 	unsigned long step = 0;
 	ssize_t ret;
-	u64 begin_tail = 0;
 	int try_inplace = 0;
 	u64 epoch_id;
 	u32 time;
@@ -566,6 +544,7 @@ static ssize_t do_nova_cow_file_write(struct file *filp,
 		return 0;
 
 	NOVA_START_TIMING(cow_write_t, cow_write_time);
+	INIT_LIST_HEAD(&item_head);
 
 	if (!access_ok(VERIFY_READ, buf, len)) {
 		ret = -EFAULT;
@@ -653,17 +632,17 @@ static ssize_t do_nova_cow_file_write(struct file *filp,
 		else
 			file_size = cpu_to_le64(inode->i_size);
 
-		nova_init_file_write_item(sb, sih, &entry_item, epoch_id,
+		entry_item = nova_alloc_file_write_item(sb);
+		if (!entry_item) {
+			ret = -ENOMEM;
+			goto out;
+		}
+
+		nova_init_file_write_item(sb, sih, entry_item, epoch_id,
 					start_blk, allocated, blocknr, time,
 					file_size);
 
-		ret = nova_append_file_write_entry(sb, pi, inode,
-					&entry_item, &update);
-		if (ret) {
-			nova_dbg("%s: append inode entry failed\n", __func__);
-			ret = -ENOSPC;
-			goto out;
-		}
+		list_add_tail(&entry_item->list, &item_head);
 
 		nova_dbgv("Write: %p, %lu\n", kmem, copied);
 		if (copied > 0) {
@@ -682,22 +661,14 @@ static ssize_t do_nova_cow_file_write(struct file *filp,
 		}
 		if (status < 0)
 			break;
-
-		if (begin_tail == 0)
-			begin_tail = update.curr_entry;
 	}
 
-	data_bits = blk_type_to_shift[sih->i_blk_type];
-	sih->i_blocks += (total_blocks << (data_bits - sb->s_blocksize_bits));
-
-	nova_update_inode(sb, inode, pi, &update);
-
-	/* Free the overlap blocks after the write is committed */
-	ret = nova_reassign_file_tree(sb, sih, begin_tail, update.tail);
-	if (ret)
+	ret = nova_commit_writes_to_log(sb, pi, inode,
+					&item_head, total_blocks, 1);
+	if (ret < 0) {
+		nova_err(sb, "commit to log failed\n");
 		goto out;
-
-	inode->i_blocks = sih->i_blocks;
+	}
 
 	ret = written;
 	NOVA_STATS_ADD(cow_write_breaks, step);
@@ -709,11 +680,9 @@ static ssize_t do_nova_cow_file_write(struct file *filp,
 		sih->i_size = pos;
 	}
 
-	sih->trans_id++;
 out:
 	if (ret < 0)
-		nova_cleanup_incomplete_write(sb, sih, blocknr, allocated,
-						begin_tail, update.tail);
+		nova_cleanup_incomplete_writes(sb, sih, &item_head, 1);
 
 	NOVA_END_TIMING(cow_write_t, cow_write_time);
 	NOVA_STATS_ADD(cow_write_bytes, written);
