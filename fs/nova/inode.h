@@ -80,7 +80,6 @@ struct nova_inode_info_header {
 	struct radix_tree_root tree;
 	struct rw_semaphore i_sem;	/* Protect log and tree */
 	struct rb_root vma_tree;	/* Write vmas */
-	struct list_head list;		/* SB list of mmap sih */
 	int num_vmas;
 	unsigned short i_mode;		/* Dir or file? */
 	unsigned long log_pages;	/* Num of log pages */
