@@ -513,7 +513,7 @@ unsigned long nova_check_existing_entry(struct super_block *sb,
 	struct inode *inode, unsigned long num_blocks, unsigned long start_blk,
 	struct nova_file_write_entry **ret_entry,
 	int check_next, u64 epoch_id,
-	int *inplace, int locked);
+	int *inplace);
 int nova_iomap_begin(struct inode *inode, loff_t offset, loff_t length,
 	unsigned int flags, struct iomap *iomap, bool taking_lock);
 int nova_iomap_end(struct inode *inode, loff_t offset, loff_t length,

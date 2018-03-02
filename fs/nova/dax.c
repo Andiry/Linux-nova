@@ -236,7 +236,7 @@ unsigned long nova_check_existing_entry(struct super_block *sb,
 	struct inode *inode, unsigned long num_blocks, unsigned long start_blk,
 	struct nova_file_write_entry **ret_entry,
 	int check_next, u64 epoch_id,
-	int *inplace, int locked)
+	int *inplace)
 {
 	struct nova_inode_info *si = NOVA_I(inode);
 	struct nova_inode_info_header *sih = &si->header;
@@ -386,7 +386,7 @@ ssize_t do_nova_inplace_file_write(struct file *filp,
 
 		ent_blks = nova_check_existing_entry(sb, inode, num_blocks,
 						start_blk, &entry,
-						1, epoch_id, &inplace, 1);
+						1, epoch_id, &inplace);
 
 		if (entry && inplace) {
 			/* We can do inplace write. Find contiguous blocks */
@@ -637,7 +637,7 @@ static int nova_dax_get_blocks(struct inode *inode, sector_t iblock,
 again:
 	num_blocks = nova_check_existing_entry(sb, inode, max_blocks,
 					iblock, &entry, check_next,
-					epoch_id, &inplace, locked);
+					epoch_id, &inplace);
 
 	if (entry) {
 		if (create == 0 || inplace) {
