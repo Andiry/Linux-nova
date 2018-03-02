@@ -302,6 +302,64 @@ out:
 	return ent_blks;
 }
 
+int nova_commit_writes_to_log(struct super_block *sb, struct nova_inode *pi,
+	struct inode *inode, struct list_head *head, unsigned long new_blocks,
+	int free)
+{
+	struct nova_inode_info *si = NOVA_I(inode);
+	struct nova_inode_info_header *sih = &si->header;
+	struct nova_file_write_item *entry_item, *temp;
+	struct nova_inode_update update;
+	unsigned int data_bits;
+	u64 begin_tail = 0;
+	int ret = 0;
+
+	if (list_empty(head))
+		return 0;
+
+	update.tail = 0;
+
+	sih_lock(sih);
+
+	list_for_each_entry(entry_item, head, list) {
+		ret = nova_append_file_write_entry(sb, pi, inode,
+					entry_item, &update);
+		if (ret) {
+			nova_dbg("%s: append inode entry failed\n", __func__);
+			ret = -ENOSPC;
+			goto out;
+		}
+
+		if (begin_tail == 0)
+			begin_tail = update.curr_entry;
+	}
+
+	/* Update file tree */
+	ret = nova_reassign_file_tree(sb, sih, begin_tail, update.tail);
+	if (ret < 0) {
+		/* FIXME: Need to rebuild the tree */
+		goto out;
+	}
+
+	data_bits = blk_type_to_shift[sih->i_blk_type];
+	sih->i_blocks += (new_blocks << (data_bits - sb->s_blocksize_bits));
+
+	inode->i_blocks = sih->i_blocks;
+
+	nova_update_inode(sb, inode, pi, &update);
+	NOVA_STATS_ADD(inplace_new_blocks, 1);
+
+	sih->trans_id++;
+out:
+	sih_unlock(sih);
+
+	if (ret == 0 && free) {
+		list_for_each_entry_safe(entry_item, temp, head, list)
+			nova_free_file_write_item(entry_item);
+	}
+
+	return ret;
+}
 
 /*
  * Do an inplace write.  This function assumes that the lock on the inode is
@@ -343,13 +401,10 @@ ssize_t do_nova_inplace_file_write(struct file *filp,
 	u32 time;
 	ssize_t ret;
 
-
 	if (len == 0)
 		return 0;
 
-
 	NOVA_START_TIMING(inplace_write_t, inplace_write_time);
-
 
 	if (!access_ok(VERIFY_READ, buf, len)) {
 		ret = -EFAULT;
