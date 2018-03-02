@@ -78,6 +78,7 @@ struct nova_inode_info_header {
 	 * dentry log entry.
 	 */
 	struct radix_tree_root tree;
+	struct rw_semaphore i_sem;	/* Protect log and tree */
 	struct rb_root vma_tree;	/* Write vmas */
 	struct list_head list;		/* SB list of mmap sih */
 	int num_vmas;
@@ -127,6 +128,25 @@ static inline struct nova_inode_info *NOVA_I(struct inode *inode)
 	return container_of(inode, struct nova_inode_info, vfs_inode);
 }
 
+static inline void si_lock(struct nova_inode_info_header *header)
+{
+	down_write(&header->i_sem);
+}
+
+static inline void si_unlock(struct nova_inode_info_header *header)
+{
+	up_write(&header->i_sem);
+}
+
+static inline void si_lock_shared(struct nova_inode_info_header *header)
+{
+	down_read(&header->i_sem);
+}
+
+static inline void si_unlock_shared(struct nova_inode_info_header *header)
+{
+	up_read(&header->i_sem);
+}
 
 static inline void nova_update_tail(struct nova_inode *pi, u64 new_tail)
 {

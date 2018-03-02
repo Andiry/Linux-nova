@@ -56,6 +56,7 @@ void nova_init_header(struct super_block *sb,
 	sih->log_head = 0;
 	sih->log_tail = 0;
 	sih->i_blk_type = NOVA_DEFAULT_BLOCK_TYPE;
+	init_rwsem(&sih->i_sem);
 }
 
 static inline void set_scan_bm(unsigned long bit,
