@@ -73,6 +73,9 @@ inline void nova_free_inode_node(struct super_block *sb,
 	struct nova_range_node *bnode);
 inline void nova_free_vma_item(struct super_block *sb,
 	struct vma_item *item);
+struct nova_file_write_item *
+nova_alloc_file_write_item(struct super_block *sb);
+void nova_free_file_write_item(struct nova_file_write_item *item);
 extern void nova_init_blockmap(struct super_block *sb, int recovery);
 extern int nova_free_data_blocks(struct super_block *sb,
 	struct nova_inode_info_header *sih, unsigned long blocknr, int num);

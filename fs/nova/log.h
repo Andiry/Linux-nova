@@ -86,6 +86,12 @@ struct nova_file_write_entry {
 
 #define WENTRY(entry)	((struct nova_file_write_entry *) entry)
 
+/* List of file write entries */
+struct nova_file_write_item {
+	struct nova_file_write_entry	entry;
+	struct list_head		list;
+};
+
 /*
  * Log entry for adding a file/directory to a directory.
  *
