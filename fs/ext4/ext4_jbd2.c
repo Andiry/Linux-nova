@@ -4,6 +4,7 @@
  */
 
 #include "ext4_jbd2.h"
+#include "journal.h"
 
 #include <trace/events/ext4.h>
 
@@ -67,6 +68,7 @@ static int ext4_journal_check_start(struct super_block *sb)
 handle_t *__ext4_journal_start_sb(struct super_block *sb, unsigned int line,
 				  int type, int blocks, int rsv_blocks)
 {
+	handle_t *handle;
 	journal_t *journal;
 	int err;
 
@@ -78,8 +80,17 @@ handle_t *__ext4_journal_start_sb(struct super_block *sb, unsigned int line,
 	journal = EXT4_SB(sb)->s_journal;
 	if (!journal)
 		return ext4_get_nojournal();
-	return jbd2__journal_start(journal, blocks, rsv_blocks, GFP_NOFS,
+
+	handle = jbd2__journal_start(journal, blocks, rsv_blocks, GFP_NOFS,
 				   type, line);
+
+	if (handle && handle->dax_journal == 1 && !handle->trans) {
+		handle->trans = dax_new_transaction(sb, blocks);
+		if (!handle->trans)
+			return ERR_PTR(-ENOMEM);
+	}
+
+	return handle;
 }
 
 int __ext4_journal_stop(const char *where, unsigned int line, handle_t *handle)
@@ -100,6 +111,12 @@ int __ext4_journal_stop(const char *where, unsigned int line, handle_t *handle)
 	}
 
 	sb = handle->h_transaction->t_journal->j_private;
+
+	if (handle->dax_journal && handle->h_ref == 1 && handle->trans) {
+		dax_free_transaction(handle->trans);
+		handle->trans = NULL;
+	}
+
 	rc = jbd2_journal_stop(handle);
 
 	if (!err)

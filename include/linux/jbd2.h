@@ -507,7 +507,10 @@ struct jbd2_journal_handle
 	unsigned int		h_requested_credits;
 
 	unsigned int		saved_alloc_context;
+
+	/* DAX journal for ext4 */
 	unsigned int	dax_journal;
+	void		*trans;
 };
 
 

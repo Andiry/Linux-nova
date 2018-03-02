@@ -620,8 +620,8 @@ again:
 		trans->transaction_id, max_log_entries, avail_size, base);
 	trans->start_addr = dax_get_block(sb, base);
 
-	trans->parent = (dax_transaction_t *)current->journal_info;
-	current->journal_info = trans;
+//	trans->parent = (dax_transaction_t *)current->journal_info;
+//	current->journal_info = trans;
 	return trans;
 journal_full:
 	mutex_unlock(&sbi->journal_mutex);
@@ -752,7 +752,7 @@ int dax_commit_transaction(struct super_block *sb,
 	printk("completing transaction for id %d\n",
 		trans->transaction_id);
 
-	current->journal_info = trans->parent;
+//	current->journal_info = trans->parent;
 	dax_free_transaction(trans);
 	return 0;
 }
@@ -777,7 +777,7 @@ int dax_abort_transaction(struct super_block *sb, dax_transaction_t *trans)
 	}
 	/* add a abort log entry */
 	dax_add_logentry(sb, trans, NULL, 0, LE_ABORT);
-	current->journal_info = trans->parent;
+//	current->journal_info = trans->parent;
 	dax_free_transaction(trans);
 	return 0;
 }
