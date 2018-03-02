@@ -602,7 +602,7 @@ int nova_check_overlap_vmas(struct super_block *sb,
  */
 static int nova_dax_get_blocks(struct inode *inode, sector_t iblock,
 	unsigned long max_blocks, u32 *bno, bool *new, bool *boundary,
-	int create, bool taking_lock)
+	int create)
 {
 	struct super_block *sb = inode->i_sb;
 	struct nova_inode *pi;
@@ -620,7 +620,7 @@ static int nova_dax_get_blocks(struct inode *inode, sector_t iblock,
 	int inplace = 0;
 	int allocated = 0;
 	int locked = 0;
-	int check_next = 1;
+	int check_next;
 	int ret = 0;
 	timing_t get_block_time;
 
@@ -635,8 +635,8 @@ static int nova_dax_get_blocks(struct inode *inode, sector_t iblock,
 
 	epoch_id = nova_get_epoch_id(sb);
 
-	if (taking_lock)
-		check_next = 0;
+	check_next = 0;
+	sih_lock_shared(sih);
 
 again:
 	num_blocks = nova_check_existing_entry(sb, inode, max_blocks,
@@ -657,8 +657,9 @@ again:
 		goto out1;
 	}
 
-	if (taking_lock && locked == 0) {
-		inode_lock(inode);
+	if (locked == 0) {
+		sih_unlock_shared(sih);
+		sih_lock(sih);
 		locked = 1;
 		/* Check again incase someone has done it for us */
 		check_next = 1;
@@ -726,15 +727,17 @@ out:
 //		bh->b_size = sb->s_blocksize * num_blocks;
 
 out1:
-	if (taking_lock && locked)
-		inode_unlock(inode);
+	if (locked)
+		sih_unlock(sih);
+	else
+		sih_unlock_shared(sih);
 
 	NOVA_END_TIMING(dax_get_block_t, get_block_time);
 	return num_blocks;
 }
 
-int nova_iomap_begin(struct inode *inode, loff_t offset, loff_t length,
-	unsigned int flags, struct iomap *iomap, bool taking_lock)
+static int nova_iomap_begin(struct inode *inode, loff_t offset, loff_t length,
+	unsigned int flags, struct iomap *iomap)
 {
 	struct nova_sb_info *sbi = NOVA_SB(inode->i_sb);
 	unsigned int blkbits = inode->i_blkbits;
@@ -745,7 +748,7 @@ int nova_iomap_begin(struct inode *inode, loff_t offset, loff_t length,
 	int ret;
 
 	ret = nova_dax_get_blocks(inode, first_block, max_blocks, &bno, &new,
-				  &boundary, flags & IOMAP_WRITE, taking_lock);
+				  &boundary, flags & IOMAP_WRITE);
 	if (ret < 0) {
 		nova_dbgv("%s: nova_dax_get_blocks failed %d", __func__, ret);
 		return ret;
@@ -772,7 +775,7 @@ int nova_iomap_begin(struct inode *inode, loff_t offset, loff_t length,
 	return 0;
 }
 
-int nova_iomap_end(struct inode *inode, loff_t offset, loff_t length,
+static int nova_iomap_end(struct inode *inode, loff_t offset, loff_t length,
 	ssize_t written, unsigned int flags, struct iomap *iomap)
 {
 	if (iomap->type == IOMAP_MAPPED &&
@@ -782,15 +785,8 @@ int nova_iomap_end(struct inode *inode, loff_t offset, loff_t length,
 	return 0;
 }
 
-
-static int nova_iomap_begin_lock(struct inode *inode, loff_t offset,
-	loff_t length, unsigned int flags, struct iomap *iomap)
-{
-	return nova_iomap_begin(inode, offset, length, flags, iomap, true);
-}
-
-static struct iomap_ops nova_iomap_ops_lock = {
-	.iomap_begin	= nova_iomap_begin_lock,
+const struct iomap_ops nova_iomap_ops = {
+	.iomap_begin	= nova_iomap_begin,
 	.iomap_end	= nova_iomap_end,
 };
 
@@ -811,7 +807,7 @@ static int nova_dax_huge_fault(struct vm_fault *vmf,
 	if (vmf->flags & FAULT_FLAG_WRITE)
 		file_update_time(vmf->vma->vm_file);
 
- 	ret = dax_iomap_fault(vmf, pe_size, NULL, NULL, &nova_iomap_ops_lock);
+	ret = dax_iomap_fault(vmf, pe_size, NULL, NULL, &nova_iomap_ops);
 
 	NOVA_END_TIMING(pmd_fault_t, fault_time);
 	return ret;

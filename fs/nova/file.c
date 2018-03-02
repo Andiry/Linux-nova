@@ -325,22 +325,9 @@ out:
 	return ret;
 }
 
-static int nova_iomap_begin_nolock(struct inode *inode, loff_t offset,
-	loff_t length, unsigned int flags, struct iomap *iomap)
-{
-	return nova_iomap_begin(inode, offset, length, flags, iomap, false);
-}
-
-static struct iomap_ops nova_iomap_ops_nolock = {
-	.iomap_begin	= nova_iomap_begin_nolock,
-	.iomap_end	= nova_iomap_end,
-};
-
 static ssize_t nova_dax_read_iter(struct kiocb *iocb, struct iov_iter *to)
 {
 	struct inode *inode = iocb->ki_filp->f_mapping->host;
-	struct nova_inode_info *si = NOVA_I(inode);
-	struct nova_inode_info_header *sih = &si->header;
 	ssize_t ret;
 	timing_t read_iter_time;
 
@@ -349,9 +336,7 @@ static ssize_t nova_dax_read_iter(struct kiocb *iocb, struct iov_iter *to)
 
 	NOVA_START_TIMING(read_iter_t, read_iter_time);
 	inode_lock_shared(inode);
-	sih_lock_shared(sih);
-	ret = dax_iomap_rw(iocb, to, &nova_iomap_ops_nolock);
-	sih_unlock_shared(sih);
+	ret = dax_iomap_rw(iocb, to, &nova_iomap_ops);
 	inode_unlock_shared(inode);
 
 	file_accessed(iocb->ki_filp);
@@ -363,8 +348,6 @@ static ssize_t nova_dax_write_iter(struct kiocb *iocb, struct iov_iter *from)
 {
 	struct file *file = iocb->ki_filp;
 	struct inode *inode = file->f_mapping->host;
-	struct nova_inode_info *si = NOVA_I(inode);
-	struct nova_inode_info_header *sih = &si->header;
 	loff_t offset;
 	size_t count;
 	ssize_t ret;
@@ -372,7 +355,6 @@ static ssize_t nova_dax_write_iter(struct kiocb *iocb, struct iov_iter *from)
 
 	NOVA_START_TIMING(write_iter_t, write_iter_time);
 	inode_lock(inode);
-	sih_lock(sih);
 	ret = generic_write_checks(iocb, from);
 	if (ret <= 0)
 		goto out_unlock;
@@ -388,14 +370,13 @@ static ssize_t nova_dax_write_iter(struct kiocb *iocb, struct iov_iter *from)
 	count = iov_iter_count(from);
 	offset = iocb->ki_pos;
 
-	ret = dax_iomap_rw(iocb, from, &nova_iomap_ops_nolock);
+	ret = dax_iomap_rw(iocb, from, &nova_iomap_ops);
 	if (ret > 0 && iocb->ki_pos > i_size_read(inode)) {
 		i_size_write(inode, iocb->ki_pos);
 		mark_inode_dirty(inode);
 	}
 
 out_unlock:
-	sih_unlock(sih);
 	inode_unlock(inode);
 	if (ret > 0)
 		ret = generic_write_sync(iocb, ret);
