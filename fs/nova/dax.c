@@ -682,9 +682,9 @@ static int nova_dax_get_blocks(struct inode *inode, sector_t iblock,
 	struct nova_inode_info_header *sih = &si->header;
 	struct nova_file_write_entry *entry = NULL;
 	struct nova_file_write_item entry_item;
+	struct list_head item_head;
 	struct nova_inode_update update;
 	u32 time;
-	unsigned int data_bits;
 	unsigned long nvmm = 0;
 	unsigned long blocknr = 0;
 	u64 epoch_id;
@@ -701,6 +701,7 @@ static int nova_dax_get_blocks(struct inode *inode, sector_t iblock,
 		return 0;
 
 	NOVA_START_TIMING(dax_get_block_t, get_block_time);
+	INIT_LIST_HEAD(&item_head);
 
 	nova_dbgv("%s: pgoff %lu, num %lu, create %d\n",
 				__func__, iblock, max_blocks, create);
@@ -760,36 +761,24 @@ again:
 					epoch_id, iblock, num_blocks,
 					blocknr, time, inode->i_size);
 
-	ret = nova_append_file_write_entry(sb, pi, inode,
-				&entry_item, &update);
-	if (ret) {
-		nova_dbgv("%s: append inode entry failed\n", __func__);
-		ret = -ENOSPC;
-		goto out;
-	}
+	list_add_tail(&entry_item.list, &item_head);
 
 	nvmm = blocknr;
-	data_bits = blk_type_to_shift[sih->i_blk_type];
-	sih->i_blocks += (num_blocks << (data_bits - sb->s_blocksize_bits));
 
-	nova_update_inode(sb, inode, pi, &update);
-
-	ret = nova_reassign_file_tree(sb, sih, update.curr_entry, update.tail);
-	if (ret) {
-		nova_dbgv("%s: nova_reassign_file_tree failed: %d\n",
-			  __func__,  ret);
+	ret = nova_commit_writes_to_log(sb, pi, inode,
+					&item_head, num_blocks, 0);
+	if (ret < 0) {
+		nova_err(sb, "commit to log failed\n");
 		goto out;
 	}
-	inode->i_blocks = sih->i_blocks;
-	sih->trans_id++;
+
 	NOVA_STATS_ADD(dax_new_blocks, 1);
 
 	*new = true;
 //	set_buffer_new(bh);
 out:
 	if (ret < 0) {
-		nova_cleanup_incomplete_write(sb, sih, blocknr, allocated,
-						0, update.tail);
+		nova_cleanup_incomplete_writes(sb, sih, &item_head, 0);
 		num_blocks = ret;
 		goto out1;
 	}
