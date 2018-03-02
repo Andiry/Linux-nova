@@ -716,11 +716,12 @@ int nova_inplace_update_write_entry(struct super_block *sb,
  * multiple entries.
  */
 int nova_append_file_write_entry(struct super_block *sb, struct nova_inode *pi,
-	struct inode *inode, struct nova_file_write_entry *data,
+	struct inode *inode, struct nova_file_write_item *item,
 	struct nova_inode_update *update)
 {
 	struct nova_inode_info *si = NOVA_I(inode);
 	struct nova_inode_info_header *sih = &si->header;
+	struct nova_file_write_entry *data = &item->entry;
 	struct nova_log_entry_info entry_info;
 	timing_t append_time;
 	int ret;

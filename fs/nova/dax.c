@@ -208,11 +208,14 @@ int nova_cleanup_incomplete_write(struct super_block *sb,
 	return 0;
 }
 
-void nova_init_file_write_entry(struct super_block *sb,
-	struct nova_inode_info_header *sih, struct nova_file_write_entry *entry,
+void nova_init_file_write_item(struct super_block *sb,
+	struct nova_inode_info_header *sih, struct nova_file_write_item *item,
 	u64 epoch_id, u64 pgoff, int num_pages, u64 blocknr, u32 time,
 	u64 file_size)
 {
+	struct nova_file_write_entry *entry = &item->entry;
+
+	INIT_LIST_HEAD(&item->list);
 	memset(entry, 0, sizeof(struct nova_file_write_entry));
 	entry->entry_type = FILE_WRITE;
 	entry->reassigned = 0;
@@ -314,7 +317,7 @@ ssize_t do_nova_inplace_file_write(struct file *filp,
 	struct super_block *sb = inode->i_sb;
 	struct nova_inode *pi;
 	struct nova_file_write_entry *entry;
-	struct nova_file_write_entry entry_data;
+	struct nova_file_write_item entry_item;
 	struct nova_inode_update update;
 	ssize_t	    written = 0;
 	loff_t pos;
@@ -445,12 +448,12 @@ ssize_t do_nova_inplace_file_write(struct file *filp,
 
 		/* Handle hole fill write */
 		if (hole_fill) {
-			nova_init_file_write_entry(sb, sih, &entry_data,
+			nova_init_file_write_item(sb, sih, &entry_item,
 						epoch_id, start_blk, allocated,
 						blocknr, time, file_size);
 
 			ret = nova_append_file_write_entry(sb, pi, inode,
-						&entry_data, &update);
+						&entry_item, &update);
 			if (ret) {
 				nova_dbg("%s: append inode entry failed\n",
 								__func__);
@@ -609,7 +612,7 @@ static int nova_dax_get_blocks(struct inode *inode, sector_t iblock,
 	struct nova_inode_info *si = NOVA_I(inode);
 	struct nova_inode_info_header *sih = &si->header;
 	struct nova_file_write_entry *entry = NULL;
-	struct nova_file_write_entry entry_data;
+	struct nova_file_write_item entry_item;
 	struct nova_inode_update update;
 	u32 time;
 	unsigned int data_bits;
@@ -684,12 +687,12 @@ again:
 
 	num_blocks = allocated;
 	/* Do not extend file size */
-	nova_init_file_write_entry(sb, sih, &entry_data,
+	nova_init_file_write_item(sb, sih, &entry_item,
 					epoch_id, iblock, num_blocks,
 					blocknr, time, inode->i_size);
 
 	ret = nova_append_file_write_entry(sb, pi, inode,
-				&entry_data, &update);
+				&entry_item, &update);
 	if (ret) {
 		nova_dbgv("%s: append inode entry failed\n", __func__);
 		ret = -ENOSPC;

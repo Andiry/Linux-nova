@@ -27,7 +27,7 @@
 int nova_block_symlink(struct super_block *sb, struct nova_inode *pi,
 	struct inode *inode, const char *symname, int len, u64 epoch_id)
 {
-	struct nova_file_write_entry entry_data;
+	struct nova_file_write_item entry_item;
 	struct nova_inode_info *si = NOVA_I(inode);
 	struct nova_inode_info_header *sih = &si->header;
 	struct nova_inode_update update;
@@ -56,10 +56,11 @@ int nova_block_symlink(struct super_block *sb, struct nova_inode *pi,
 
 	/* Apply a write entry to the log page */
 	time = current_time(inode).tv_sec;
-	nova_init_file_write_entry(sb, sih, &entry_data, epoch_id, 0, 1,
+	nova_init_file_write_item(sb, sih, &entry_item, epoch_id, 0, 1,
 					name_blocknr, time, len + 1);
 
-	ret = nova_append_file_write_entry(sb, pi, inode, &entry_data, &update);
+	sih_lock(sih);
+	ret = nova_append_file_write_entry(sb, pi, inode, &entry_item, &update);
 	if (ret) {
 		nova_dbg("%s: append file write entry failed %d\n",
 					__func__, ret);
@@ -69,6 +70,7 @@ int nova_block_symlink(struct super_block *sb, struct nova_inode *pi,
 
 	nova_update_inode(sb, inode, pi, &update);
 	sih->trans_id++;
+	sih_unlock(sih);
 
 	return 0;
 }

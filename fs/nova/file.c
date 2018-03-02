@@ -167,7 +167,7 @@ static long nova_fallocate(struct file *file, int mode, loff_t offset,
 	struct nova_inode_info_header *sih = &si->header;
 	struct nova_inode *pi;
 	struct nova_file_write_entry *entry;
-	struct nova_file_write_entry entry_data;
+	struct nova_file_write_item entry_item;
 	struct nova_inode_update update;
 	unsigned long start_blk, num_blocks, ent_blks = 0;
 	unsigned long total_blocks = 0;
@@ -259,12 +259,12 @@ static long nova_fallocate(struct file *file, int mode, loff_t offset,
 		}
 
 		/* Handle hole fill write */
-		nova_init_file_write_entry(sb, sih, &entry_data, epoch_id,
+		nova_init_file_write_item(sb, sih, &entry_item, epoch_id,
 					start_blk, allocated, blocknr,
 					time, new_size);
 
 		ret = nova_append_file_write_entry(sb, pi, inode,
-					&entry_data, &update);
+					&entry_item, &update);
 		if (ret) {
 			nova_dbg("%s: append inode entry failed\n", __func__);
 			ret = -ENOSPC;
@@ -539,7 +539,7 @@ static ssize_t do_nova_cow_file_write(struct file *filp,
 	struct nova_inode_info_header *sih = &si->header;
 	struct super_block *sb = inode->i_sb;
 	struct nova_inode *pi;
-	struct nova_file_write_entry entry_data;
+	struct nova_file_write_item entry_item;
 	struct nova_inode_update update;
 	ssize_t	    written = 0;
 	loff_t pos;
@@ -653,12 +653,12 @@ static ssize_t do_nova_cow_file_write(struct file *filp,
 		else
 			file_size = cpu_to_le64(inode->i_size);
 
-		nova_init_file_write_entry(sb, sih, &entry_data, epoch_id,
+		nova_init_file_write_item(sb, sih, &entry_item, epoch_id,
 					start_blk, allocated, blocknr, time,
 					file_size);
 
 		ret = nova_append_file_write_entry(sb, pi, inode,
-					&entry_data, &update);
+					&entry_item, &update);
 		if (ret) {
 			nova_dbg("%s: append inode entry failed\n", __func__);
 			ret = -ENOSPC;
