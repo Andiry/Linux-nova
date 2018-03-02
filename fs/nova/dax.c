@@ -208,6 +208,25 @@ int nova_cleanup_incomplete_write(struct super_block *sb,
 	return 0;
 }
 
+int nova_cleanup_incomplete_writes(struct super_block *sb,
+	struct nova_inode_info_header *sih, struct list_head *head, int free)
+{
+	struct nova_file_write_item *entry_item, *temp;
+	struct nova_file_write_entry *entry;
+	unsigned long blocknr;
+
+	list_for_each_entry_safe(entry_item, temp, head, list) {
+		entry = &entry_item->entry;
+		blocknr = nova_get_blocknr(sb, entry->block, sih->i_blk_type);
+		nova_free_data_blocks(sb, sih, blocknr, entry->num_pages);
+
+		if (free)
+			nova_free_file_write_item(entry_item);
+	}
+
+	return 0;
+}
+
 void nova_init_file_write_item(struct super_block *sb,
 	struct nova_inode_info_header *sih, struct nova_file_write_item *item,
 	u64 epoch_id, u64 pgoff, int num_pages, u64 blocknr, u32 time,
