@@ -541,6 +541,8 @@ ssize_t nova_inplace_file_write(struct file *filp,
 {
 	struct address_space *mapping = filp->f_mapping;
 	struct inode *inode = mapping->host;
+	struct nova_inode_info *si = NOVA_I(inode);
+	struct nova_inode_info_header *sih = &si->header;
 	int ret;
 
 	if (len == 0)
@@ -548,9 +550,11 @@ ssize_t nova_inplace_file_write(struct file *filp,
 			
 	sb_start_write(inode->i_sb);
 	inode_lock(inode);
+	sih_lock(sih);
 
 	ret = do_nova_inplace_file_write(filp, buf, len, ppos);
 	
+	sih_unlock(sih);
 	inode_unlock(inode);
 	sb_end_write(inode->i_sb);
 
@@ -878,7 +882,7 @@ int nova_insert_write_vma(struct vm_area_struct *vma)
 			inode->i_ino, vma, vma->vm_start, vma->vm_end,
 			vma->vm_pgoff);
 
-	inode_lock(inode);
+	sih_lock(sih);
 
 	temp = &(sih->vma_tree.rb_node);
 	parent = NULL;
@@ -906,7 +910,7 @@ int nova_insert_write_vma(struct vm_area_struct *vma)
 	sih->num_vmas++;
 	sih->trans_id++;
 out:
-	inode_unlock(inode);
+	sih_unlock(sih);
 
 	NOVA_END_TIMING(insert_vma_t, insert_vma_time);
 	return ret;
@@ -927,7 +931,7 @@ static int nova_remove_write_vma(struct vm_area_struct *vma)
 
 
 	NOVA_START_TIMING(remove_vma_t, remove_vma_time);
-	inode_lock(inode);
+	sih_lock(sih);
 
 	temp = sih->vma_tree.rb_node;
 	while (temp) {
@@ -948,7 +952,7 @@ static int nova_remove_write_vma(struct vm_area_struct *vma)
 	if (found)
 		sih->num_vmas--;
 
-	inode_unlock(inode);
+	sih_unlock(sih);
 
 	if (found) {
 		nova_dbgv("Inode %lu remove vma %p, start 0x%lx, end 0x%lx, pgoff %lu\n",

@@ -127,22 +127,22 @@ static inline struct nova_inode_info *NOVA_I(struct inode *inode)
 	return container_of(inode, struct nova_inode_info, vfs_inode);
 }
 
-static inline void si_lock(struct nova_inode_info_header *header)
+static inline void sih_lock(struct nova_inode_info_header *header)
 {
 	down_write(&header->i_sem);
 }
 
-static inline void si_unlock(struct nova_inode_info_header *header)
+static inline void sih_unlock(struct nova_inode_info_header *header)
 {
 	up_write(&header->i_sem);
 }
 
-static inline void si_lock_shared(struct nova_inode_info_header *header)
+static inline void sih_lock_shared(struct nova_inode_info_header *header)
 {
 	down_read(&header->i_sem);
 }
 
-static inline void si_unlock_shared(struct nova_inode_info_header *header)
+static inline void sih_unlock_shared(struct nova_inode_info_header *header)
 {
 	up_read(&header->i_sem);
 }

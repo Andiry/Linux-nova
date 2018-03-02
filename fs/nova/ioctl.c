@@ -61,6 +61,7 @@ long nova_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		}
 
 		inode_lock(inode);
+		sih_lock(sih);
 		oldflags = le32_to_cpu(pi->i_flags);
 
 		if ((flags ^ oldflags) &
@@ -90,6 +91,7 @@ long nova_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		}
 		sih->trans_id++;
 flags_out_unlock:
+		sih_unlock(sih);
 		inode_unlock(inode);
 flags_out:
 		mnt_drop_write_file(filp);
@@ -114,6 +116,7 @@ flags_out:
 
 		epoch_id = nova_get_epoch_id(sb);
 		inode_lock(inode);
+		sih_lock(sih);
 		inode->i_ctime = current_time(inode);
 		inode->i_generation = generation;
 
@@ -125,6 +128,7 @@ flags_out:
 			nova_invalidate_link_change_entry(sb, old_linkc);
 		}
 		sih->trans_id++;
+		sih_unlock(sih);
 		inode_unlock(inode);
 setversion_out:
 		mnt_drop_write_file(filp);
