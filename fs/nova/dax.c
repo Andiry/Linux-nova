@@ -485,6 +485,9 @@ ssize_t do_nova_inplace_file_write(struct file *filp,
 			new_blocks += allocated;
 			blk_off = nova_get_block_off(sb, blocknr,
 							sih->i_blk_type);
+
+			invalidate_inode_pages2_range(inode->i_mapping,
+					start_blk, start_blk + allocated - 1);
 		}
 
 		step++;
