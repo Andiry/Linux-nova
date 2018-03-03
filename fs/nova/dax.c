@@ -332,9 +332,169 @@ int nova_commit_writes_to_log(struct super_block *sb, struct nova_inode *pi,
 	return ret;
 }
 
+/* Memcpy from newly allocated data blocks to existing data blocks */
+static int nova_inplace_memcpy(struct super_block *sb, struct inode *inode,
+	struct nova_file_write_entry *from, struct nova_file_write_entry *to,
+	unsigned long num_blocks, loff_t pos, size_t len)
+{
+	struct nova_inode_info *si = NOVA_I(inode);
+	struct nova_inode_info_header *sih = &si->header;
+	struct nova_log_entry_info entry_info;
+	unsigned long pgoff;
+	unsigned long from_nvmm, to_nvmm;
+	void *from_addr, *to_addr = NULL;
+	loff_t base, start, end, offset;
+
+	pgoff = le64_to_cpu(from->pgoff);
+	base = start = pgoff << PAGE_SHIFT;
+	end = (pgoff + num_blocks) << PAGE_SHIFT;
+
+	if (start < pos)
+		start = pos;
+
+	if (end > pos + len)
+		end = pos + len;
+
+	len = end - start;
+	offset = start - base;
+
+	from_nvmm = get_nvmm(sb, sih, from, pgoff);
+	from_addr = nova_get_block(sb, (from_nvmm << PAGE_SHIFT));
+	to_nvmm = get_nvmm(sb, sih, to, pgoff);
+	to_addr = nova_get_block(sb, (to_nvmm << PAGE_SHIFT));
+
+	memcpy_to_pmem_nocache(to_addr + offset, from_addr + offset, len);
+
+	/* Update entry */
+	entry_info.type = FILE_WRITE;
+	entry_info.epoch_id = from->epoch_id;
+	entry_info.trans_id = from->trans_id;
+	entry_info.time = from->mtime;
+	entry_info.file_size = from->size;
+	entry_info.inplace = 1;
+
+	nova_inplace_update_write_entry(sb, inode, to, &entry_info);
+	return 0;
+}
+
+/*
+ * Due to concurrent DAX fault, we may have overlapped entries in the list.
+ * We copy the data to the existing data pages and update the entry.
+ * Must be called with sih write lock held.
+ */
+static int nova_commit_inplace_writes_to_log(struct super_block *sb,
+	struct nova_inode *pi, struct inode *inode,
+	struct list_head *head, unsigned long new_blocks,
+	loff_t pos, size_t len)
+{
+	struct nova_inode_info *si = NOVA_I(inode);
+	struct nova_inode_info_header *sih = &si->header;
+	struct nova_file_write_item *entry_item, *temp;
+	struct nova_file_write_item *new_item;
+	struct nova_file_write_entry *curr, *entry;
+	struct list_head new_head;
+	unsigned long start_blk, ent_blks;
+	unsigned long num_blocks;
+	unsigned long blocknr;
+	u64 epoch_id;
+	int inplace;
+	int ret = 0;
+
+	if (list_empty(head))
+		return 0;
+
+	sih_lock(sih);
+	INIT_LIST_HEAD(&new_head);
+
+	list_for_each_entry_safe(entry_item, temp, head, list) {
+		list_del(&entry_item->list);
+		curr = &entry_item->entry;
+		epoch_id = le64_to_cpu(curr->epoch_id);
+again:
+		num_blocks = le32_to_cpu(curr->num_pages);
+		start_blk = le64_to_cpu(curr->pgoff);
+
+		ent_blks = nova_check_existing_entry(sb, inode, num_blocks,
+						start_blk, &entry,
+						1, epoch_id, &inplace);
+
+		if (!entry && ent_blks == num_blocks) {
+			/* Hole */
+			list_add_tail(&entry_item->list, &new_head);
+			continue;
+		}
+
+		blocknr = nova_get_blocknr(sb, curr->block,
+						sih->i_blk_type);
+		/* Overlap with head. Memcpy */
+		if (entry) {
+			new_blocks -= ent_blks;
+			nova_inplace_memcpy(sb, inode, curr, entry, ent_blks,
+						pos, len);
+			if (ent_blks == num_blocks) {
+				/* Full copy */
+				nova_free_data_blocks(sb, sih, blocknr,
+						ent_blks);
+				nova_free_file_write_item(entry_item);
+				continue;
+			} else {
+				/* Partial copy */
+				curr->num_pages -= ent_blks;
+				curr->pgoff += ent_blks;
+				curr->block += ent_blks << PAGE_SHIFT;
+				nova_free_data_blocks(sb, sih, blocknr,
+						ent_blks);
+				goto again;
+			}
+		}
+
+		/* Overlap with middle or tail. */
+		new_item = nova_alloc_file_write_item(sb);
+		if (!new_item) {
+			ret = -ENOMEM;
+			goto out;
+		}
+
+		nova_init_file_write_item(sb, sih, new_item,
+				epoch_id, start_blk, ent_blks,
+				blocknr, entry->mtime, entry->size);
+
+		list_add_tail(&new_item->list, &new_head);
+
+		curr->num_pages -= ent_blks;
+		curr->pgoff += ent_blks;
+		curr->block += ent_blks << PAGE_SHIFT;
+		goto again;
+	}
+
+	ret = nova_commit_writes_to_log(sb, pi, inode,
+					&new_head, new_blocks, 1);
+	if (ret < 0) {
+		nova_err(sb, "commit to log failed\n");
+		goto out;
+	}
+
+out:
+	if (ret < 0)
+		nova_cleanup_incomplete_write(sb, sih, &new_head, 1);
+
+	sih_unlock(sih);
+	return ret;
+}
+
 /*
  * Do an inplace write.  This function assumes that the lock on the inode is
  * already held.
+ *
+ * We do this in three steps:
+ * 1. Check the tree, protected by sih read lock.
+ * 2. Allocate blocks for hole, copy from user buffer.
+ * 3. Take sih write lock and commit the writes.
+ *
+ * This is necessary because DAX fault can occur when we do the copy.
+ * We cannot hold sih lock when performing the data copy,
+ * and DAX fault may allocate data pages during step 2.
+ * In this case we overwrite with our data and free the data pages we allocated.
  */
 ssize_t do_nova_inplace_file_write(struct file *filp,
 	const char __user *buf,	size_t len, loff_t *ppos)
@@ -350,7 +510,7 @@ ssize_t do_nova_inplace_file_write(struct file *filp,
 	struct list_head item_head;
 	struct nova_inode_update update;
 	ssize_t	    written = 0;
-	loff_t pos;
+	loff_t pos, original_pos;
 	size_t count, offset, copied;
 	unsigned long start_blk, num_blocks, ent_blks = 0;
 	unsigned long total_blocks;
@@ -380,7 +540,7 @@ ssize_t do_nova_inplace_file_write(struct file *filp,
 		ret = -EFAULT;
 		goto out;
 	}
-	pos = *ppos;
+	pos = original_pos = *ppos;
 
 	if (filp->f_flags & O_APPEND)
 		pos = i_size_read(inode);
@@ -412,9 +572,11 @@ ssize_t do_nova_inplace_file_write(struct file *filp,
 		offset = pos & (nova_inode_blk_size(sih) - 1);
 		start_blk = pos >> sb->s_blocksize_bits;
 
+		sih_lock_shared(sih);
 		ent_blks = nova_check_existing_entry(sb, inode, num_blocks,
 						start_blk, &entry,
 						1, epoch_id, &inplace);
+		sih_unlock_shared(sih);
 
 		if (entry && inplace) {
 			/* We can do inplace write. Find contiguous blocks */
@@ -521,8 +683,8 @@ ssize_t do_nova_inplace_file_write(struct file *filp,
 			break;
 	}
 
-	ret = nova_commit_writes_to_log(sb, pi, inode,
-					&item_head, new_blocks, 1);
+	ret = nova_commit_inplace_writes_to_log(sb, pi, inode, &item_head,
+					new_blocks, original_pos, len);
 	if (ret < 0) {
 		nova_err(sb, "commit to log failed\n");
 		goto out;
@@ -555,8 +717,6 @@ ssize_t nova_inplace_file_write(struct file *filp,
 {
 	struct address_space *mapping = filp->f_mapping;
 	struct inode *inode = mapping->host;
-	struct nova_inode_info *si = NOVA_I(inode);
-	struct nova_inode_info_header *sih = &si->header;
 	int ret;
 
 	if (len == 0)
@@ -564,11 +724,9 @@ ssize_t nova_inplace_file_write(struct file *filp,
 			
 	sb_start_write(inode->i_sb);
 	inode_lock(inode);
-	sih_lock(sih);
 
 	ret = do_nova_inplace_file_write(filp, buf, len, ppos);
 	
-	sih_unlock(sih);
 	inode_unlock(inode);
 	sb_end_write(inode->i_sb);
 

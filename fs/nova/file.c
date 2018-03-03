@@ -544,6 +544,7 @@ static ssize_t do_nova_cow_file_write(struct file *filp,
 	if (len == 0)
 		return 0;
 
+	sih_lock(sih);
 	NOVA_START_TIMING(cow_write_t, cow_write_time);
 	INIT_LIST_HEAD(&item_head);
 
@@ -687,6 +688,7 @@ out:
 
 	NOVA_END_TIMING(cow_write_t, cow_write_time);
 	NOVA_STATS_ADD(cow_write_bytes, written);
+	sih_unlock(sih);
 
 	if (try_inplace)
 		return do_nova_inplace_file_write(filp, buf, len, ppos);
@@ -711,11 +713,9 @@ ssize_t nova_cow_file_write(struct file *filp,
 	
 	sb_start_write(inode->i_sb);
 	inode_lock(inode);
-	sih_lock(sih);
 
 	ret = do_nova_cow_file_write(filp, buf, len, ppos);
 
-	sih_unlock(sih);
 	inode_unlock(inode);
 	sb_end_write(inode->i_sb);
 
