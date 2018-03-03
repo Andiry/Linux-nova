@@ -97,13 +97,6 @@ const char *Timingstring[TIMING_NUM] = {
 	"log_thorough_gc",
 	"check_invalid_log",
 
-	/* Integrity */
-	"============ Integrity operations ==============",
-	"protect_memcpy",
-	"protect_file_data",
-	"reset_mapping",
-	"reset_vma",
-
 	/* Others */
 	"================ Miscellaneous =================",
 	"find_cache_page",
@@ -125,13 +118,6 @@ const char *Timingstring[TIMING_NUM] = {
 	"mmap_page_fault",
 	"mmap_pmd_fault",
 	"mmap_pfn_mkwrite",
-	"insert_vma",
-	"remove_vma",
-	"set_vma_readonly",
-	"mmap_cow",
-	"udpate_mapping",
-	"udpate_pfn",
-	"mmap_handler",
 
 	/* Rebuild */
 	"=================== Rebuild ====================",

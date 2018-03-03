@@ -162,14 +162,7 @@ static int nova_seq_IO_show(struct seq_file *seq, void *v)
 			IOstats[inplace_new_blocks]);
 	seq_printf(seq, "DAX get blocks %llu, allocate new blocks %llu\n",
 			Countstats[dax_get_block_t], IOstats[dax_new_blocks]);
-	seq_printf(seq, "Dirty pages %llu\n", IOstats[dirty_pages]);
-	seq_printf(seq, "Protect head %llu, tail %llu\n",
-			IOstats[protect_head], IOstats[protect_tail]);
-	seq_printf(seq, "Page fault %llu, dax cow fault %llu\n"
-			"CoW write overlap mmap range %llu, mapping/pfn updated pages %llu\n",
-			Countstats[mmap_fault_t], Countstats[mmap_cow_t],
-			IOstats[cow_overlap_mmap],
-			IOstats[mapping_updated_pages]);
+	seq_printf(seq, "Page fault %llu\n", Countstats[mmap_fault_t]);
 	seq_printf(seq, "fsync %llu, fdatasync %llu\n",
 			Countstats[fsync_t], IOstats[fdatasync]);
 

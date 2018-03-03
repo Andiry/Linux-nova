@@ -100,13 +100,6 @@ enum timing_category {
 	thorough_gc_t,
 	check_invalid_t,
 
-	/* Integrity */
-	integrity_title_t,
-	protect_memcpy_t,
-	protect_file_data_t,
-	reset_mapping_t,
-	reset_vma_t,
-
 	/* Others */
 	others_title_t,
 	find_cache_t,
@@ -128,13 +121,6 @@ enum timing_category {
 	mmap_fault_t,
 	pmd_fault_t,
 	pfn_mkwrite_t,
-	insert_vma_t,
-	remove_vma_t,
-	set_vma_read_t,
-	mmap_cow_t,
-	update_mapping_t,
-	update_pfn_t,
-	mmap_handler_t,
 
 	/* Rebuild */
 	rebuild_title_t,
@@ -156,11 +142,6 @@ enum stats_category {
 	thorough_checked_pages,
 	fast_gc_pages,
 	thorough_gc_pages,
-	dirty_pages,
-	protect_head,
-	protect_tail,
-	mapping_updated_pages,
-	cow_overlap_mmap,
 	dax_new_blocks,
 	inplace_new_blocks,
 	fdatasync,
