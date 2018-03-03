@@ -296,7 +296,7 @@ next:
 
 out:
 	if (ret < 0)
-		nova_cleanup_incomplete_writes(sb, sih, &item_head, 1);
+		nova_cleanup_incomplete_write(sb, sih, &item_head, 1);
 
 	sih_unlock(sih);
 	inode_unlock(inode);
@@ -683,7 +683,7 @@ static ssize_t do_nova_cow_file_write(struct file *filp,
 
 out:
 	if (ret < 0)
-		nova_cleanup_incomplete_writes(sb, sih, &item_head, 1);
+		nova_cleanup_incomplete_write(sb, sih, &item_head, 1);
 
 	NOVA_END_TIMING(cow_write_t, cow_write_time);
 	NOVA_STATS_ADD(cow_write_bytes, written);

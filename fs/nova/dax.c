@@ -166,49 +166,6 @@ int nova_reassign_file_tree(struct super_block *sb,
 }
 
 int nova_cleanup_incomplete_write(struct super_block *sb,
-	struct nova_inode_info_header *sih, unsigned long blocknr,
-	int allocated, u64 begin_tail, u64 end_tail)
-{
-	void *addr;
-	struct nova_file_write_entry *entry;
-	u64 curr_p = begin_tail;
-	size_t entry_size = sizeof(struct nova_file_write_entry);
-
-	if (blocknr > 0 && allocated > 0)
-		nova_free_data_blocks(sb, sih, blocknr, allocated);
-
-	if (begin_tail == 0 || end_tail == 0)
-		return 0;
-
-	while (curr_p != end_tail) {
-		if (is_last_entry(curr_p, entry_size))
-			curr_p = next_log_page(sb, curr_p);
-
-		if (curr_p == 0) {
-			nova_err(sb, "%s: File inode %lu log is NULL!\n",
-				__func__, sih->ino);
-			return -EINVAL;
-		}
-
-		addr = (void *) nova_get_block(sb, curr_p);
-		entry = (struct nova_file_write_entry *) addr;
-
-		if (nova_get_entry_type(entry) != FILE_WRITE) {
-			nova_dbg("%s: entry type is not write? %d\n",
-				__func__, nova_get_entry_type(entry));
-			curr_p += entry_size;
-			continue;
-		}
-
-		blocknr = entry->block >> PAGE_SHIFT;
-		nova_free_data_blocks(sb, sih, blocknr, entry->num_pages);
-		curr_p += entry_size;
-	}
-
-	return 0;
-}
-
-int nova_cleanup_incomplete_writes(struct super_block *sb,
 	struct nova_inode_info_header *sih, struct list_head *head, int free)
 {
 	struct nova_file_write_item *entry_item, *temp;
@@ -389,7 +346,8 @@ ssize_t do_nova_inplace_file_write(struct file *filp,
 	struct super_block *sb = inode->i_sb;
 	struct nova_inode *pi;
 	struct nova_file_write_entry *entry;
-	struct nova_file_write_item entry_item;
+	struct nova_file_write_item *entry_item;
+	struct list_head item_head;
 	struct nova_inode_update update;
 	ssize_t	    written = 0;
 	loff_t pos;
@@ -398,18 +356,15 @@ ssize_t do_nova_inplace_file_write(struct file *filp,
 	unsigned long total_blocks;
 	unsigned long new_blocks = 0;
 	unsigned long blocknr = 0;
-	unsigned int data_bits;
 	int allocated = 0;
 	int inplace = 0;
 	bool hole_fill = false;
-	bool update_log = false;
 	void *kmem;
 	u64 blk_off;
 	size_t bytes;
 	long status = 0;
 	timing_t inplace_write_time, memcpy_time;
 	unsigned long step = 0;
-	u64 begin_tail = 0;
 	u64 epoch_id;
 	u64 file_size;
 	u32 time;
@@ -419,6 +374,7 @@ ssize_t do_nova_inplace_file_write(struct file *filp,
 		return 0;
 
 	NOVA_START_TIMING(inplace_write_t, inplace_write_time);
+	INIT_LIST_HEAD(&item_head);
 
 	if (!access_ok(VERIFY_READ, buf, len)) {
 		ret = -EFAULT;
@@ -520,18 +476,17 @@ ssize_t do_nova_inplace_file_write(struct file *filp,
 
 		/* Handle hole fill write */
 		if (hole_fill) {
-			nova_init_file_write_item(sb, sih, &entry_item,
+			entry_item = nova_alloc_file_write_item(sb);
+			if (!entry_item) {
+				ret = -ENOMEM;
+				goto out;
+			}
+
+			nova_init_file_write_item(sb, sih, entry_item,
 						epoch_id, start_blk, allocated,
 						blocknr, time, file_size);
 
-			ret = nova_append_file_write_entry(sb, pi, inode,
-						&entry_item, &update);
-			if (ret) {
-				nova_dbg("%s: append inode entry failed\n",
-								__func__);
-				ret = -ENOSPC;
-				goto out;
-			}
+			list_add_tail(&entry_item->list, &item_head);
 		} else {
 			/* Update existing entry */
 			struct nova_log_entry_info entry_info;
@@ -564,27 +519,13 @@ ssize_t do_nova_inplace_file_write(struct file *filp,
 		}
 		if (status < 0)
 			break;
-
-		if (hole_fill) {
-			update_log = true;
-			if (begin_tail == 0)
-				begin_tail = update.curr_entry;
-		}
 	}
 
-	data_bits = blk_type_to_shift[sih->i_blk_type];
-	sih->i_blocks += (new_blocks << (data_bits - sb->s_blocksize_bits));
-
-	inode->i_blocks = sih->i_blocks;
-
-	if (update_log) {
-		nova_update_inode(sb, inode, pi, &update);
-		NOVA_STATS_ADD(inplace_new_blocks, 1);
-
-		/* Update file tree */
-		ret = nova_reassign_file_tree(sb, sih, begin_tail, update.tail);
-		if (ret)
-			goto out;
+	ret = nova_commit_writes_to_log(sb, pi, inode,
+					&item_head, new_blocks, 1);
+	if (ret < 0) {
+		nova_err(sb, "commit to log failed\n");
+		goto out;
 	}
 
 	ret = written;
@@ -597,11 +538,9 @@ ssize_t do_nova_inplace_file_write(struct file *filp,
 		sih->i_size = pos;
 	}
 
-	sih->trans_id++;
 out:
 	if (ret < 0)
-		nova_cleanup_incomplete_write(sb, sih, blocknr, allocated,
-						begin_tail, update.tail);
+		nova_cleanup_incomplete_write(sb, sih, &item_head, 1);
 
 	NOVA_END_TIMING(inplace_write_t, inplace_write_time);
 	NOVA_STATS_ADD(inplace_write_bytes, written);
@@ -781,7 +720,7 @@ again:
 //	set_buffer_new(bh);
 out:
 	if (ret < 0) {
-		nova_cleanup_incomplete_writes(sb, sih, &item_head, 0);
+		nova_cleanup_incomplete_write(sb, sih, &item_head, 0);
 		num_blocks = ret;
 		goto out1;
 	}
