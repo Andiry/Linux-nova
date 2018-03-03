@@ -536,7 +536,6 @@ static ssize_t do_nova_cow_file_write(struct file *filp,
 	timing_t cow_write_time, memcpy_time;
 	unsigned long step = 0;
 	ssize_t ret;
-	int try_inplace = 0;
 	u64 epoch_id;
 	u32 time;
 
@@ -565,15 +564,6 @@ static ssize_t do_nova_cow_file_write(struct file *filp,
 	num_blocks = ((count + offset - 1) >> sb->s_blocksize_bits) + 1;
 	total_blocks = num_blocks;
 	start_blk = pos >> sb->s_blocksize_bits;
-
-	if (nova_check_overlap_vmas(sb, sih, start_blk, num_blocks)) {
-		nova_dbgv("COW write overlaps with vma: inode %lu, pgoff %lu, %lu blocks\n",
-				inode->i_ino, start_blk, num_blocks);
-		NOVA_STATS_ADD(cow_overlap_mmap, 1);
-		try_inplace = 1;
-		ret = -EACCES;
-		goto out;
-	}
 
 	/* offset in the actual block size block */
 
@@ -690,9 +680,6 @@ out:
 	NOVA_STATS_ADD(cow_write_bytes, written);
 	sih_unlock(sih);
 
-	if (try_inplace)
-		return do_nova_inplace_file_write(filp, buf, len, ppos);
-
 	return ret;
 }
 
@@ -704,8 +691,6 @@ ssize_t nova_cow_file_write(struct file *filp,
 {
 	struct address_space *mapping = filp->f_mapping;
 	struct inode *inode = mapping->host;
-	struct nova_inode_info *si = NOVA_I(inode);
-	struct nova_inode_info_header *sih = &si->header;
 	int ret;
 
 	if (len == 0)
@@ -714,7 +699,10 @@ ssize_t nova_cow_file_write(struct file *filp,
 	sb_start_write(inode->i_sb);
 	inode_lock(inode);
 
-	ret = do_nova_cow_file_write(filp, buf, len, ppos);
+	if (mapping_mapped(mapping))
+		ret = do_nova_inplace_file_write(filp, buf, len, ppos);
+	else
+		ret = do_nova_cow_file_write(filp, buf, len, ppos);
 
 	inode_unlock(inode);
 	sb_end_write(inode->i_sb);
@@ -742,8 +730,6 @@ static int nova_dax_file_mmap(struct file *file, struct vm_area_struct *vma)
 	vma->vm_flags |= VM_MIXEDMAP | VM_HUGEPAGE;
 
 	vma->vm_ops = &nova_dax_vm_ops;
-
-	nova_insert_write_vma(vma);
 
 	nova_dbg_mmap4k("[%s:%d] inode %lu, MMAP 4KPAGE vm_start(0x%lx), vm_end(0x%lx), vm pgoff %lu, %lu blocks, vm_flags(0x%lx), vm_page_prot(0x%lx)\n",
 			__func__, __LINE__,

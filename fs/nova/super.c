@@ -834,12 +834,6 @@ inline void nova_free_inode_node(struct super_block *sb,
 	nova_free_range_node(node);
 }
 
-inline void nova_free_vma_item(struct super_block *sb,
-	struct vma_item *item)
-{
-	nova_free_range_node((struct nova_range_node *)item);
-}
-
 inline struct nova_file_write_item *
 nova_alloc_file_write_item(struct super_block *sb)
 {
@@ -869,12 +863,6 @@ inline struct nova_range_node *nova_alloc_inode_node(struct super_block *sb)
 {
 	return nova_alloc_range_node(sb);
 }
-
-inline struct vma_item *nova_alloc_vma_item(struct super_block *sb)
-{
-	return (struct vma_item *)nova_alloc_range_node(sb);
-}
-
 
 static struct inode *nova_alloc_inode(struct super_block *sb)
 {

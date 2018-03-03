@@ -345,15 +345,8 @@ struct nova_range_node_lowhigh {
 /* A node in the RB tree representing a range of pages */
 struct nova_range_node {
 	struct rb_node node;
-	struct vm_area_struct *vma;
 	unsigned long range_low;
 	unsigned long range_high;
-};
-
-struct vma_item {
-	/* Reuse header of nova_range_node struct */
-	struct rb_node node;
-	struct vm_area_struct *vma;
 };
 
 #include "bbuild.h"
@@ -516,11 +509,6 @@ unsigned long nova_check_existing_entry(struct super_block *sb,
 	struct nova_file_write_entry **ret_entry,
 	int check_next, u64 epoch_id,
 	int *inplace);
-int nova_insert_write_vma(struct vm_area_struct *vma);
-
-int nova_check_overlap_vmas(struct super_block *sb,
-			    struct nova_inode_info_header *sih,
-			    unsigned long pgoff, unsigned long num_pages);
 int nova_handle_head_tail_blocks(struct super_block *sb,
 				 struct inode *inode, loff_t pos,
 				 size_t count, void *kmem);
@@ -579,14 +567,6 @@ extern long nova_compat_ioctl(struct file *file, unsigned int cmd,
 	unsigned long arg);
 #endif
 
-
-
-/* mprotect.c */
-int nova_get_vma_overlap_range(struct super_block *sb,
-	struct nova_inode_info_header *sih, struct vm_area_struct *vma,
-	unsigned long entry_pgoff, unsigned long entry_pages,
-	unsigned long *start_pgoff, unsigned long *num_pages);
-bool nova_find_pgoff_in_vma(struct inode *inode, unsigned long pgoff);
 
 /* namei.c */
 extern const struct inode_operations nova_dir_inode_operations;
