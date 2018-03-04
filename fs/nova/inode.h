@@ -80,6 +80,7 @@ struct nova_inode_info_header {
 	struct radix_tree_root tree;
 	struct rw_semaphore i_sem;	/* Protect log and tree */
 	unsigned short i_mode;		/* Dir or file? */
+	unsigned int i_flags;
 	unsigned long log_pages;	/* Num of log pages */
 	unsigned long i_size;
 	unsigned long i_blocks;

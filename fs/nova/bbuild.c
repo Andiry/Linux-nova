@@ -44,6 +44,7 @@ void nova_init_header(struct super_block *sb,
 	sih->pi_addr = 0;
 	INIT_RADIX_TREE(&sih->tree, GFP_ATOMIC);
 	sih->i_mode = i_mode;
+	sih->i_flags = 0;
 	sih->valid_entries = 0;
 	sih->num_entries = 0;
 	sih->last_setattr = 0;

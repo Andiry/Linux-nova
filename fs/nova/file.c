@@ -285,6 +285,7 @@ next:
 
 	if (ret || (mode & FALLOC_FL_KEEP_SIZE)) {
 		pi->i_flags |= cpu_to_le32(NOVA_EOFBLOCKS_FL);
+		sih->i_flags |= cpu_to_le32(NOVA_EOFBLOCKS_FL);
 	}
 
 	if (!(mode & FALLOC_FL_KEEP_SIZE) && new_size > inode->i_size) {
