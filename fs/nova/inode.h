@@ -182,7 +182,7 @@ struct inode_table *nova_get_inode_table(struct super_block *sb, int cpu)
 	if (cpu >= sbi->cpus)
 		return NULL;
 
-	table_start = INODE_TABLE0_START;
+	table_start = INODE_TABLE_START;
 
 	return (struct inode_table *)((char *)nova_get_block(sb,
 		NOVA_DEF_BLOCK_SIZE_4K * table_start) +
