@@ -302,7 +302,7 @@ static inline int nova_check_super_checksum(struct super_block *sb)
 		return 1;
 }
 
-inline void nova_sync_super(struct super_block *sb)
+static inline void nova_sync_super(struct super_block *sb)
 {
 	struct nova_sb_info *sbi = NOVA_SB(sb);
 	struct nova_super_block *super = nova_get_super(sb);
@@ -320,7 +320,7 @@ inline void nova_sync_super(struct super_block *sb)
 }
 
 /* Update checksum for the DRAM copy */
-inline void nova_update_super_crc(struct super_block *sb)
+static inline void nova_update_super_crc(struct super_block *sb)
 {
 	struct nova_sb_info *sbi = NOVA_SB(sb);
 	u32 crc = 0;
@@ -674,8 +674,6 @@ setup_sb:
 	if (!(sb->s_flags & MS_RDONLY))
 		nova_update_mount_time(sb);
 
-	nova_print_curr_epoch_id(sb);
-
 	retval = 0;
 	NOVA_END_TIMING(mount_t, mount_time);
 	return retval;
@@ -701,7 +699,7 @@ out:
 	return retval;
 }
 
-int nova_statfs(struct dentry *d, struct kstatfs *buf)
+static int nova_statfs(struct dentry *d, struct kstatfs *buf)
 {
 	struct super_block *sb = d->d_sb;
 	struct nova_sb_info *sbi = (struct nova_sb_info *)sb->s_fs_info;
@@ -739,7 +737,7 @@ static int nova_show_options(struct seq_file *seq, struct dentry *root)
 	return 0;
 }
 
-int nova_remount(struct super_block *sb, int *mntflags, char *data)
+static int nova_remount(struct super_block *sb, int *mntflags, char *data)
 {
 	unsigned long old_sb_flags;
 	unsigned long old_mount_opt;
@@ -777,8 +775,6 @@ static void nova_put_super(struct super_block *sb)
 	struct nova_sb_info *sbi = NOVA_SB(sb);
 	struct inode_map *inode_map;
 	int i;
-
-	nova_print_curr_epoch_id(sb);
 
 	/* It's unmount time, so unmap the nova memory */
 //	nova_print_free_lists(sb);
