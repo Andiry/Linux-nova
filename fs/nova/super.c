@@ -513,7 +513,7 @@ static int nova_fill_super(struct super_block *sb, void *data, int silent)
 	BUILD_BUG_ON(sizeof(struct nova_inode_log_page) != PAGE_SIZE);
 
 	BUILD_BUG_ON(sizeof(struct journal_ptr_pair) > CACHELINE_SIZE);
-	BUILD_BUG_ON(PAGE_SIZE/sizeof(struct journal_ptr_pair) < MAX_CPUS);
+	BUILD_BUG_ON(PAGE_SIZE * NUM_JOURNAL_PAGES / CACHELINE_SIZE < MAX_CPUS);
 	BUILD_BUG_ON(PAGE_SIZE/sizeof(struct nova_lite_journal_entry) <
 		     NOVA_MAX_JOURNAL_LENGTH);
 

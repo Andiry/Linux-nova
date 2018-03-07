@@ -45,6 +45,7 @@ struct nova_super_block {
  * The fifth block (and the following 16 pages) contains pointers to journal pages.
  */
 #define	HEAD_RESERVED_BLOCKS	32
+#define	NUM_JOURNAL_PAGES	16
 
 #define SUPER_BLOCK_START       0 // Superblock
 #define	RESERVE_INODE_START	1 // Reserved inodes
