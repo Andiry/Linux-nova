@@ -652,9 +652,6 @@ setup_sb:
 	sb->s_xattr = NULL;
 	sb->s_flags |= MS_NOSEC;
 
-	/* If the FS was not formatted on this mount, scan the meta-data after
-	 * truncate list has been processed
-	 */
 	if ((sbi->s_mount_opt & NOVA_MOUNT_FORMAT) == 0)
 		nova_recovery(sb);
 
@@ -726,13 +723,6 @@ static int nova_show_options(struct seq_file *seq, struct dentry *root)
 {
 	struct nova_sb_info *sbi = NOVA_SB(root->d_sb);
 
-	//seq_printf(seq, ",physaddr=0x%016llx", (u64)sbi->phys_addr);
-	//if (sbi->initsize)
-	//     seq_printf(seq, ",init=%luk", sbi->initsize >> 10);
-	//if (sbi->blocksize)
-	//	 seq_printf(seq, ",bs=%lu", sbi->blocksize);
-	//if (sbi->bpi)
-	//	seq_printf(seq, ",bpi=%lu", sbi->bpi);
 	if (sbi->mode != (0777 | S_ISVTX))
 		seq_printf(seq, ",mode=%03o", sbi->mode);
 	if (uid_valid(sbi->uid))
@@ -743,7 +733,6 @@ static int nova_show_options(struct seq_file *seq, struct dentry *root)
 		seq_puts(seq, ",errors=remount-ro");
 	if (test_opt(root->d_sb, ERRORS_PANIC))
 		seq_puts(seq, ",errors=panic");
-	/* memory protection disabled by default */
 	if (test_opt(root->d_sb, DAX))
 		seq_puts(seq, ",dax");
 
@@ -871,8 +860,6 @@ static struct inode *nova_alloc_inode(struct super_block *sb)
 	vi = kmem_cache_alloc(nova_inode_cachep, GFP_NOFS);
 	if (!vi)
 		return NULL;
-
-//	vi->vfs_inode.i_version = 1;
 
 	return &vi->vfs_inode;
 }
@@ -1045,7 +1032,9 @@ static int __init init_nova_fs(void)
 
 	nova_proc_root = proc_mkdir(proc_dirname, NULL);
 
-	nova_dbg("Data structure size: inode %lu, log_page %lu, file_write_entry %lu, dir_entry(max) %d, setattr_entry %lu, link_change_entry %lu\n",
+	nova_dbg("Data structure size: inode %lu, log_page %lu, "
+		"file_write_entry %lu, dir_entry(max) %d, "
+		"setattr_entry %lu, link_change_entry %lu\n",
 		sizeof(struct nova_inode),
 		sizeof(struct nova_inode_log_page),
 		sizeof(struct nova_file_write_entry),
@@ -1091,7 +1080,7 @@ static void __exit exit_nova_fs(void)
 }
 
 MODULE_AUTHOR("Andiry Xu <jix024@cs.ucsd.edu>");
-MODULE_DESCRIPTION("NOVA: A Persistent Memory File System");
+MODULE_DESCRIPTION("NOVA: NOn-Volatile memory Accelerated File System");
 MODULE_LICENSE("GPL");
 
 module_init(init_nova_fs)
