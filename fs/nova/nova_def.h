@@ -127,23 +127,4 @@ static inline void nova_flush_buffer(void *buf, uint32_t len, bool fence)
 		PERSISTENT_BARRIER();
 }
 
-/* =============== Integrity and Recovery Parameters =============== */
-#define	NOVA_META_CSUM_LEN	(4)
-#define	NOVA_DATA_CSUM_LEN	(4)
-
-/* This is to set the initial value of checksum state register.
- * For CRC32C this should not matter and can be set to any value.
- */
-#define	NOVA_INIT_CSUM		(1)
-
-#define	ADDR_ALIGN(p, bytes)	((void *) (((unsigned long) p) & ~(bytes - 1)))
-
-/* Data stripe size in bytes and shift.
- * In NOVA this size determines the size of a checksummed stripe, and it
- * equals to the affordable lost size of data per block (page).
- * Its value should be no less than the poison radius size of media errors.
- */
-#define POISON_RADIUS		(512)
-#define POISON_MASK		(~(POISON_RADIUS - 1))
-
 #endif /* _LINUX_NOVA_DEF_H */
