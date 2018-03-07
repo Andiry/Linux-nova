@@ -64,7 +64,6 @@
 
 /* #define nova_dbg(s, args...)		pr_debug(s, ## args) */
 #define nova_dbg(s, args ...)		pr_info(s, ## args)
-#define nova_dbg1(s, args ...)
 #define nova_err(sb, s, args ...)	nova_error_mng(sb, s, ## args)
 #define nova_warn(s, args ...)		pr_warn(s, ## args)
 #define nova_info(s, args ...)		pr_info(s, ## args)
@@ -134,22 +133,14 @@ extern unsigned int nova_dbgmask;
 
 
 #define	READDIR_END			(ULONG_MAX)
-#define	INVALID_CPU			(-1)
 #define	ANY_CPU				(65536)
 #define	FREE_BATCH			(16)
-#define	DEAD_ZONE_BLOCKS		(256)
 
 extern int measure_timing;
 extern int inplace_data_updates;
 
 extern unsigned int blk_type_to_shift[NOVA_BLOCK_TYPE_MAX];
 extern unsigned int blk_type_to_size[NOVA_BLOCK_TYPE_MAX];
-
-
-
-#define	MMAP_WRITE_BIT	0x20UL	// mmaped for write
-#define	IS_MAP_WRITE(p)	((p) & (MMAP_WRITE_BIT))
-#define	MMAP_ADDR(p)	((p) & (PAGE_MASK))
 
 
 /* Mask out flags that are inappropriate for the given type of inode. */
@@ -468,12 +459,6 @@ nova_get_blocknr(struct super_block *sb, u64 block, unsigned short btype)
 	return block >> PAGE_SHIFT;
 }
 
-static inline unsigned long nova_get_pfn(struct super_block *sb, u64 block)
-{
-	return (NOVA_SB(sb)->phys_addr + block) >> PAGE_SHIFT;
-}
-
-#define	CACHE_ALIGN(p)	((p) & ~(CACHELINE_SIZE - 1))
 
 /* Function Prototypes */
 

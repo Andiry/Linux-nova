@@ -455,14 +455,6 @@ static int not_enough_blocks(struct free_list *free_list,
 		return 1;
 	}
 
-	if (atype == LOG &&
-	    last->range_high - first->range_low < DEAD_ZONE_BLOCKS) {
-		nova_dbgv("%s: allocation would cause deadzone violation. high=0x%lx, low=0x%lx, DEADZONE=%d",
-			  __func__, last->range_high, first->range_low,
-			  DEAD_ZONE_BLOCKS);
-		return 1;
-	}
-
 	return 0;
 }
 
