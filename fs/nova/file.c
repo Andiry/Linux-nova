@@ -488,7 +488,7 @@ out:
 }
 
 /*
- * Wrappers. We need to use the rcu read lock to avoid
+ * Wrappers. We need to use the read lock to avoid
  * concurrent truncate operation. No problem for write because we held
  * lock.
  */

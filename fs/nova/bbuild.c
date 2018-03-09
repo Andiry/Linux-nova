@@ -1388,7 +1388,7 @@ static bool nova_try_normal_recovery(struct super_block *sb)
 }
 
 /*
- * Recovery routine has three tasks:
+ * Recovery routine has two tasks:
  * 1. Restore inuse inode list;
  * 2. Restore the NVMM allocator.
  */
